@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from math import ceil
 
 from app.database.db import get_connection
+from app.services.salary import league_cap
 from app.services.chemistry import ChemistryBonus, ChemistryCard, calculate_chemistry
 
 
@@ -29,6 +30,7 @@ class LineupCard:
     image_path: str
     lineup_slot: str | None
     collection_code: str
+    salary: int = 0
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,8 @@ class LineupOverview:
     final_overall: int | None
     chemistry_bonuses: list[ChemistryBonus]
     is_complete: bool
+    salary_total: int = 0
+    salary_cap: int = 0
 
 
 @dataclass(frozen=True)
@@ -100,7 +104,14 @@ def row_to_lineup_card(row) -> LineupCard:
         image_path=row["image_path"],
         lineup_slot=row["lineup_slot"],
         collection_code=row["collection_code"],
+        salary=int(row["salary"] or 0) if "salary" in row.keys() else 0,
     )
+
+
+async def get_user_league(user_id: int) -> str:
+    with get_connection() as connection:
+        row = connection.execute("SELECT league FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row["league"] if row and row["league"] else "NCAA"
 
 
 async def get_lineup_overview(user_id: int) -> LineupOverview:
@@ -121,6 +132,7 @@ async def get_lineup_overview(user_id: int) -> LineupOverview:
                 cards.country,
                 cards.rarity,
                 cards.image_path,
+                cards.salary,
                 collections.name AS collection_name,
                 collections.code AS collection_code
             FROM user_cards
@@ -142,6 +154,7 @@ async def get_lineup_overview(user_id: int) -> LineupOverview:
 
     cards = [card for card in slots.values() if card is not None]
     filled_count = len(cards)
+    salary_total = sum(card.salary for card in cards)
     average_overall = round(sum(card.overall for card in cards) / filled_count) if filled_count else None
     chemistry_result = await calculate_chemistry([
         ChemistryCard(
@@ -166,6 +179,8 @@ async def get_lineup_overview(user_id: int) -> LineupOverview:
         final_overall=final_overall,
         chemistry_bonuses=chemistry_result.bonuses,
         is_complete=filled_count == len(LINEUP_SLOT_ORDER),
+        salary_total=salary_total,
+        salary_cap=league_cap(await get_user_league(user_id)),
     )
 
 
@@ -379,3 +394,97 @@ async def clear_lineup(user_id: int) -> LineupActionResult:
         connection.commit()
 
     return LineupActionResult(True, "Состав очищен.")
+
+
+async def auto_fill_best_lineup(user_id: int) -> LineupActionResult:
+    selected: dict[str, int] = {}
+    used_player_keys: set[str] = set()
+    missing_positions: list[str] = []
+
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            SELECT
+                user_cards.id AS user_card_id,
+                cards.player_key,
+                cards.position,
+                cards.overall,
+                cards.name
+            FROM user_cards
+            JOIN cards ON cards.id = user_cards.card_id
+            WHERE user_cards.user_id = ?
+              AND cards.active = 1
+            ORDER BY cards.overall DESC, cards.name ASC, user_cards.id DESC
+            """,
+            (user_id,),
+        )
+        rows = cursor.fetchall()
+
+        for slot_code in LINEUP_SLOT_ORDER:
+            slot = get_slot_info(slot_code)
+            chosen_row = None
+
+            for row in rows:
+                player_key = str(row["player_key"] or "")
+
+                if row["position"] != slot.position:
+                    continue
+
+                if player_key and player_key in used_player_keys:
+                    continue
+
+                chosen_row = row
+                break
+
+            if chosen_row is None:
+                missing_positions.append(slot.short_title)
+                continue
+
+            selected[slot_code] = int(chosen_row["user_card_id"])
+            player_key = str(chosen_row["player_key"] or "")
+
+            if player_key:
+                used_player_keys.add(player_key)
+
+        if not selected:
+            return LineupActionResult(
+                False,
+                "В коллекции пока нет подходящих карточек для состава.",
+            )
+
+        connection.execute(
+            """
+            UPDATE user_cards
+            SET is_in_lineup = 0,
+                lineup_slot = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ?
+              AND is_in_lineup = 1
+            """,
+            (user_id,),
+        )
+
+        for slot_code, user_card_id in selected.items():
+            connection.execute(
+                """
+                UPDATE user_cards
+                SET is_in_lineup = 1,
+                    lineup_slot = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                  AND user_id = ?
+                """,
+                (slot_code, user_card_id, user_id),
+            )
+
+        connection.commit()
+
+    if missing_positions:
+        missing_text = ", ".join(missing_positions)
+        return LineupActionResult(
+            True,
+            f"Лучшие доступные карточки поставлены. Пока не хватает позиций: {missing_text}.",
+        )
+
+    return LineupActionResult(True, "Лучший состав собран автоматически.")
+

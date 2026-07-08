@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -7,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from app.keyboards.matches import (
+    build_match_captcha_keyboard,
     MATCH_HISTORY_PER_PAGE,
     build_match_details_keyboard,
     build_match_history_keyboard,
@@ -26,14 +28,26 @@ from app.services.matches import (
     get_match_history_page,
     get_match_main_info,
 )
+from app.services.community import get_user_id_by_telegram_id
+from app.services.match_guard import (
+    CAPTCHA_TTL_SECONDS,
+    generate_captcha,
+    has_active_match,
+    release_match_lock,
+    try_acquire_match_lock,
+    utc_now,
+)
 from app.services.users import get_player_profile_by_telegram_id
 from app.texts.matches import (
+    build_match_captcha_text,
     MATCH_ALREADY_SEARCHING_TEXT,
     MATCH_CANCELLED_TEXT,
     MATCH_SEARCH_TEXT,
     build_match_details_text,
+    build_match_goal_live_text,
     build_match_history_text,
     build_match_main_text,
+    build_match_no_goal_live_text,
     build_match_not_ready_text,
     build_match_playing_text,
     build_match_queue_fallback_text,
@@ -46,7 +60,7 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 MATCHES_BUTTON_TEXT = "🏒 Играть"
-MATCH_PLAYING_SECONDS = 5
+MATCH_PLAYING_SECONDS = 15
 MATCH_QUEUE_WATCHER_INTERVAL_SECONDS = 3
 
 background_tasks: set[asyncio.Task] = set()
@@ -108,7 +122,114 @@ async def edit_stored_message(bot, chat_id: int, message_id: int, text: str, rep
         await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
 
 
+def build_goal_timeline(result: MatchPlayResult) -> list[tuple[str, object | None]]:
+    goal_events = [event for event in (result.events or []) if event.event_type == "GOAL"]
+    user_left = max(0, result.user_score)
+    opponent_left = max(0, result.opponent_score)
+    timeline: list[tuple[str, object | None]] = []
+
+    for event in goal_events:
+        description = event.description.strip()
+        opponent_goal = description.startswith(f"{result.opponent_name} ")
+
+        if opponent_goal and opponent_left > 0:
+            timeline.append(("opponent", event))
+            opponent_left -= 1
+        elif user_left > 0:
+            timeline.append(("user", event))
+            user_left -= 1
+        elif opponent_left > 0:
+            timeline.append(("opponent", event))
+            opponent_left -= 1
+
+    while user_left > 0:
+        timeline.append(("user", None))
+        user_left -= 1
+
+    while opponent_left > 0:
+        timeline.append(("opponent", None))
+        opponent_left -= 1
+
+    return timeline
+
+
+async def show_live_match_for_result(
+    *,
+    bot,
+    chat_id: int,
+    message_id: int,
+    result: MatchPlayResult,
+) -> None:
+    goal_timeline = build_goal_timeline(result)
+    total_goals = len(goal_timeline)
+
+    if total_goals == 0:
+        await edit_stored_message(
+            bot,
+            chat_id,
+            message_id,
+            build_match_no_goal_live_text(result),
+        )
+        await asyncio.sleep(MATCH_PLAYING_SECONDS)
+        return
+
+    user_score = 0
+    opponent_score = 0
+    interval = MATCH_PLAYING_SECONDS / (total_goals + 1)
+
+    for index, (side, event) in enumerate(goal_timeline, start=1):
+        await asyncio.sleep(interval)
+
+        if side == "user":
+            user_score += 1
+        else:
+            opponent_score += 1
+
+        await edit_stored_message(
+            bot,
+            chat_id,
+            message_id,
+            build_match_goal_live_text(
+                result,
+                event=event,
+                user_score=user_score,
+                opponent_score=opponent_score,
+                scorer_side=side,
+            ),
+        )
+
+    await asyncio.sleep(interval)
+
+
 async def show_match_playing_and_result(
+    *,
+    callback: CallbackQuery,
+    current_message: Message,
+    current_result: MatchPlayResult,
+    opponent_result: MatchPlayResult | None = None,
+    opponent_chat_id: int | None = None,
+    opponent_message_id: int | None = None,
+) -> None:
+    # #2: помечаем матч активным на время анимации — второй матч не запустить.
+    lock_user_id = get_user_id_by_telegram_id(callback.from_user.id)
+    if lock_user_id is not None:
+        await try_acquire_match_lock(lock_user_id)
+
+    try:
+        await _run_match_animation_and_result(
+            callback=callback,
+            current_message=current_message,
+            current_result=current_result,
+            opponent_result=opponent_result,
+            opponent_chat_id=opponent_chat_id,
+            opponent_message_id=opponent_message_id,
+        )
+    finally:
+        if lock_user_id is not None:
+            await release_match_lock(lock_user_id)
+
+
+async def _run_match_animation_and_result(
     *,
     callback: CallbackQuery,
     current_message: Message,
@@ -132,7 +253,30 @@ async def show_match_playing_and_result(
             build_match_playing_text(opponent_result.opponent_name, opponent_result.opponent_type),
         )
 
-    await asyncio.sleep(MATCH_PLAYING_SECONDS)
+    live_tasks = [
+        asyncio.create_task(
+            show_live_match_for_result(
+                bot=callback.bot,
+                chat_id=current_message.chat.id,
+                message_id=current_message.message_id,
+                result=current_result,
+            )
+        )
+    ]
+
+    if opponent_result is not None and opponent_chat_id is not None and opponent_message_id is not None:
+        live_tasks.append(
+            asyncio.create_task(
+                show_live_match_for_result(
+                    bot=callback.bot,
+                    chat_id=opponent_chat_id,
+                    message_id=opponent_message_id,
+                    result=opponent_result,
+                )
+            )
+        )
+
+    await asyncio.gather(*live_tasks)
 
     await edit_stored_message(
         callback.bot,
@@ -166,7 +310,12 @@ async def show_single_match_playing_and_result(
         build_match_playing_text(result.opponent_name, result.opponent_type),
     )
 
-    await asyncio.sleep(MATCH_PLAYING_SECONDS)
+    await show_live_match_for_result(
+        bot=bot,
+        chat_id=chat_id,
+        message_id=message_id,
+        result=result,
+    )
 
     await edit_stored_message(
         bot,
@@ -351,6 +500,80 @@ async def matches_play(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
 
+    user_id = get_user_id_by_telegram_id(callback.from_user.id)
+    if user_id is not None and await has_active_match(user_id):
+        await callback.answer("У вас уже идёт матч. Дождитесь его окончания.", show_alert=True)
+        return
+
+    # #3: капча перед матчем (защита от автокликера).
+    captcha = generate_captcha()
+    await state.update_data(
+        captcha_answer=captcha.correct,
+        captcha_started=utc_now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    try:
+        await message.edit_text(
+            build_match_captcha_text(captcha.prompt),
+            reply_markup=build_match_captcha_keyboard(captcha.options),
+        )
+    except TelegramBadRequest:
+        await safe_delete_callback_message(callback)
+        await callback.bot.send_message(
+            chat_id=message.chat.id,
+            text=build_match_captcha_text(captcha.prompt),
+            reply_markup=build_match_captcha_keyboard(captcha.options),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("matches:captcha:"))
+async def matches_captcha(callback: CallbackQuery, state: FSMContext) -> None:
+    message = callback.message
+    if not isinstance(message, Message):
+        await callback.answer()
+        return
+
+    choice = callback.data.split(":")[-1] if callback.data else ""
+    data = await state.get_data()
+    answer = data.get("captcha_answer")
+    started = data.get("captcha_started")
+
+    started_dt = None
+    if started:
+        try:
+            started_dt = datetime.strptime(started, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            started_dt = None
+
+    expired = started_dt is None or (utc_now() - started_dt).total_seconds() > CAPTCHA_TTL_SECONDS
+
+    if expired or answer is None:
+        captcha = generate_captcha()
+        await state.update_data(captcha_answer=captcha.correct, captcha_started=utc_now().strftime("%Y-%m-%d %H:%M:%S"))
+        await message.edit_text(
+            build_match_captcha_text(captcha.prompt, retry="⏳ Время вышло, попробуй ещё раз."),
+            reply_markup=build_match_captcha_keyboard(captcha.options),
+        )
+        await callback.answer("Время вышло")
+        return
+
+    if choice != answer:
+        captcha = generate_captcha()
+        await state.update_data(captcha_answer=captcha.correct, captcha_started=utc_now().strftime("%Y-%m-%d %H:%M:%S"))
+        await message.edit_text(
+            build_match_captcha_text(captcha.prompt, retry="❌ Неверно, попробуй ещё раз."),
+            reply_markup=build_match_captcha_keyboard(captcha.options),
+        )
+        await callback.answer("Неверно")
+        return
+
+    # Капча пройдена — стартуем матч.
+    await state.clear()
+    await callback.answer("Проверка пройдена ✅")
+    await start_matchmaking(callback, message)
+
+
+async def start_matchmaking(callback: CallbackQuery, message: Message) -> None:
     start_match_queue_watcher(callback.bot)
 
     try:
@@ -377,7 +600,6 @@ async def matches_play(callback: CallbackQuery, state: FSMContext) -> None:
             build_match_not_ready_text(matchmaking.message),
             reply_markup=build_match_not_ready_keyboard(),
         )
-        await callback.answer()
         return
 
     if matchmaking.status == "already_queued":
@@ -388,11 +610,9 @@ async def matches_play(callback: CallbackQuery, state: FSMContext) -> None:
             MATCH_ALREADY_SEARCHING_TEXT,
             reply_markup=build_match_search_keyboard(),
         )
-        await callback.answer("Поиск уже идёт")
         return
 
     if matchmaking.status == "matched" and matchmaking.current_result is not None:
-        await callback.answer("Соперник найден")
         await show_match_playing_and_result(
             callback=callback,
             current_message=message,
@@ -403,7 +623,6 @@ async def matches_play(callback: CallbackQuery, state: FSMContext) -> None:
         )
         return
 
-    await callback.answer("Ищем соперника")
     task = asyncio.create_task(
         finish_queued_search_after_wait(
             bot=callback.bot,

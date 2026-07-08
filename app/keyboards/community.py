@@ -34,6 +34,16 @@ def build_players_keyboard(players, page: int, pages_count: int) -> InlineKeyboa
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+def build_direct_trade_players_keyboard(players, page: int, pages_count: int) -> InlineKeyboardMarkup:
+    keyboard = []
+    for player in players:
+        keyboard.append([InlineKeyboardButton(text=f"🎯 {player.nickname} · {player.league}", callback_data=f"community:trade_direct_player:{player.id}:{page}")])
+    keyboard.append(pagination_buttons("community:trade_direct_players", page, pages_count))
+    keyboard.append([InlineKeyboardButton(text="🔎 Поиск", callback_data="community:trade_direct_search")])
+    keyboard.append([InlineKeyboardButton(text="🔁 Обмены", callback_data="community:trades")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
 def build_player_profile_keyboard(player_id: int, page: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -54,8 +64,10 @@ def build_text_cancel_keyboard(callback_data: str = "community:main") -> InlineK
 def build_trades_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📈 Открытые обмены", callback_data="community:trade_list:market:1")],
-            [InlineKeyboardButton(text="➕ Создать обмен", callback_data="community:trade_create")],
+            [InlineKeyboardButton(text="📈 Рынок обменов", callback_data="community:trade_list:market:1")],
+            [InlineKeyboardButton(text="➕ На рынок", callback_data="community:trade_create")],
+            [InlineKeyboardButton(text="🎯 Игроку", callback_data="community:trade_direct_search")],
+            [InlineKeyboardButton(text="📥 Личные предложения", callback_data="community:trade_list:incoming:1")],
             [InlineKeyboardButton(text="📦 Мои обмены", callback_data="community:trade_list:my:1")],
             [InlineKeyboardButton(text="🤝 Сообщество", callback_data="community:main")],
         ]
@@ -131,6 +143,8 @@ def build_trade_offer_profile_keyboard(offer, viewer_user_id: int | None, mode: 
 
     if offer.status == "open" and viewer_user_id and offer.creator_user_id != viewer_user_id:
         keyboard.append([InlineKeyboardButton(text="✅ Принять обмен", callback_data=f"community:trade_accept:{offer.id}:{mode}:{page}")])
+        if offer.target_user_id == viewer_user_id:
+            keyboard.append([InlineKeyboardButton(text="❌ Отказаться", callback_data=f"community:trade_decline:{offer.id}:{mode}:{page}")])
     if offer.status == "open" and viewer_user_id and offer.creator_user_id == viewer_user_id:
         keyboard.append([InlineKeyboardButton(text="🚫 Отменить обмен", callback_data=f"community:trade_cancel:{offer.id}:{mode}:{page}")])
     keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"community:trade_list:{mode}:{page}")])
@@ -143,6 +157,7 @@ def build_clans_main_keyboard(has_clan: bool) -> InlineKeyboardMarkup:
         keyboard.append([InlineKeyboardButton(text="🏰 Мой клан", callback_data="community:my_clan")])
     else:
         keyboard.append([InlineKeyboardButton(text="➕ Создать клан", callback_data="community:clan_create")])
+    keyboard.append([InlineKeyboardButton(text="🏟 Войны кланов", callback_data="wars:main")])
     keyboard.append([InlineKeyboardButton(text="📋 Все кланы", callback_data="community:clan_list:1")])
     keyboard.append([InlineKeyboardButton(text="🔎 Найти клан", callback_data="community:clan_search")])
     keyboard.append([InlineKeyboardButton(text="🤝 Сообщество", callback_data="community:main")])
@@ -177,6 +192,8 @@ def build_clan_profile_keyboard(profile, page: int, admin: bool = False) -> Inli
     if profile.viewer_role is None and profile.active:
         keyboard.append([InlineKeyboardButton(text="✅ Вступить", callback_data=f"community:clan_join:{profile.id}:{page}")])
     elif profile.viewer_role is not None:
+        if profile.viewer_role in ("leader", "officer"):
+            keyboard.append([InlineKeyboardButton(text="⚙️ Управление составом", callback_data="community:clan_manage")])
         keyboard.append([InlineKeyboardButton(text="🚪 Покинуть клан", callback_data="community:clan_leave")])
     keyboard.append([InlineKeyboardButton(text="⬅️ К кланам", callback_data=f"community:clan_list:{page}")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -199,3 +216,66 @@ def build_admin_trades_main_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu:main")],
         ]
     )
+
+
+def build_clan_manage_keyboard(members, actor_user_id: int, actor_role: str, pending_count: int = 0) -> InlineKeyboardMarkup:
+    keyboard = []
+    req_label = f"📥 Заявки ({pending_count})" if pending_count else "📥 Заявки"
+    keyboard.append([InlineKeyboardButton(text=req_label, callback_data="community:clan_requests")])
+    role_icons = {"leader": "👑", "officer": "🥈", "member": "🏒"}
+
+    for member in members:
+        if member.user_id == actor_user_id:
+            continue
+        if member.role == "leader":
+            continue
+        if actor_role == "officer" and member.role == "officer":
+            continue
+        icon = role_icons.get(member.role, "🏒")
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"{icon} {member.nickname}",
+                callback_data=f"community:clan_member:{member.user_id}",
+            )
+        ])
+
+    keyboard.append([InlineKeyboardButton(text="⬅️ К клану", callback_data="community:my_clan")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def build_clan_member_manage_keyboard(member_user_id: int, member_role: str, actor_role: str) -> InlineKeyboardMarkup:
+    keyboard = []
+
+    if actor_role == "leader":
+        vice_text = "🥈 Снять вице-президента" if member_role == "officer" else "🥈 Назначить вице-президентом"
+        keyboard.append([InlineKeyboardButton(text=vice_text, callback_data=f"community:clan_vice:{member_user_id}")])
+
+    keyboard.append([InlineKeyboardButton(text="🚫 Исключить из клана", callback_data=f"community:clan_kick_confirm:{member_user_id}")])
+    keyboard.append([InlineKeyboardButton(text="⬅️ К составу", callback_data="community:clan_manage")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def build_clan_kick_confirm_keyboard(member_user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🚫 Да, исключить", callback_data=f"community:clan_kick:{member_user_id}")],
+            [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"community:clan_member:{member_user_id}")],
+        ]
+    )
+
+
+def build_clan_requests_keyboard(requests) -> InlineKeyboardMarkup:
+    keyboard = []
+    for req in requests:
+        keyboard.append([
+            InlineKeyboardButton(text=f"✅ {req['nickname']}", callback_data=f"community:clan_req_approve:{req['id']}"),
+            InlineKeyboardButton(text="❌", callback_data=f"community:clan_req_reject:{req['id']}"),
+        ])
+    keyboard.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="community:clan_requests")])
+    keyboard.append([InlineKeyboardButton(text="⬅️ К составу", callback_data="community:clan_manage")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def build_clan_requests_shortcut_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 Открыть заявки", callback_data="community:clan_requests")]])
+

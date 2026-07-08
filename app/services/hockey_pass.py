@@ -136,6 +136,25 @@ class UserRewardsPage:
 
 
 @dataclass(frozen=True)
+class UserHockeyPassLevel:
+    level: int
+    points_required: int
+    is_unlocked: bool
+    is_current: bool
+    free_rewards: list[HockeyPassRewardItem]
+    premium_rewards: list[HockeyPassRewardItem]
+
+
+@dataclass(frozen=True)
+class UserHockeyPassMap:
+    info: UserHockeyPassInfo
+    levels: list[UserHockeyPassLevel]
+    page: int
+    pages_count: int
+    total_count: int
+
+
+@dataclass(frozen=True)
 class AdminRewardsPage:
     pass_id: int
     pass_title: str
@@ -428,6 +447,75 @@ async def get_user_hockey_pass_info(telegram_id: int) -> UserHockeyPassInfo | No
         premium_total=int(rewards_row["premium_total"] or 0),
         premium_claimed=int(rewards_row["premium_claimed"] or 0),
         is_finished=is_pass_finished(pass_row["end_at"]),
+    )
+
+
+
+async def get_user_hockey_pass_map(telegram_id: int, page: int = 1, per_page: int = 5) -> UserHockeyPassMap | None:
+    info = await get_user_hockey_pass_info(telegram_id)
+    if info is None:
+        return None
+
+    if info.pass_id is None:
+        return UserHockeyPassMap(
+            info=info,
+            levels=[],
+            page=1,
+            pages_count=1,
+            total_count=0,
+        )
+
+    pages_count = max(1, ceil(info.levels_count / per_page))
+    safe_page = min(max(page, 1), pages_count)
+    start_level = (safe_page - 1) * per_page + 1
+    end_level = min(info.levels_count, start_level + per_page - 1)
+
+    with get_connection() as connection:
+        user_cursor = connection.execute(
+            "SELECT id FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+        user_row = user_cursor.fetchone()
+        if user_row is None:
+            return None
+
+        cursor = connection.execute(
+            REWARD_SELECT_SQL.format(claimed_expr="CASE WHEN cr.id IS NULL THEN 0 ELSE 1 END")
+            + """
+            LEFT JOIN user_hockey_pass_rewards cr ON cr.reward_id = r.id AND cr.user_id = ?
+            WHERE r.pass_id = ? AND r.active = 1 AND r.level BETWEEN ? AND ?
+            ORDER BY r.level, CASE r.track WHEN 'free' THEN 1 ELSE 2 END, r.id
+            """,
+            (user_row["id"], info.pass_id, start_level, end_level),
+        )
+        rows = cursor.fetchall()
+
+    rewards_by_level: dict[int, dict[str, list[HockeyPassRewardItem]]] = {}
+    for row in rows:
+        reward = reward_from_row(row, user_level=info.level, premium_unlocked=info.premium_unlocked)
+        level_rewards = rewards_by_level.setdefault(reward.level, {"free": [], "premium": []})
+        level_rewards.setdefault(reward.track, []).append(reward)
+
+    levels: list[UserHockeyPassLevel] = []
+    for level_number in range(start_level, end_level + 1):
+        level_rewards = rewards_by_level.get(level_number, {"free": [], "premium": []})
+        levels.append(
+            UserHockeyPassLevel(
+                level=level_number,
+                points_required=max(0, (level_number - 1) * info.points_per_level),
+                is_unlocked=info.level >= level_number,
+                is_current=info.level == level_number,
+                free_rewards=level_rewards.get("free", []),
+                premium_rewards=level_rewards.get("premium", []),
+            )
+        )
+
+    return UserHockeyPassMap(
+        info=info,
+        levels=levels,
+        page=safe_page,
+        pages_count=pages_count,
+        total_count=info.levels_count,
     )
 
 
@@ -1097,6 +1185,7 @@ async def claim_reward(telegram_id: int, reward_id: int) -> tuple[ClaimResult | 
 
 async def purchase_premium(telegram_id: int) -> tuple[PurchaseResult | None, str | None]:
     with get_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
         user_row = connection.execute("SELECT id FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
         if user_row is None:
             return None, "Открой игру через /start."
@@ -1129,7 +1218,14 @@ async def purchase_premium(telegram_id: int) -> tuple[PurchaseResult | None, str
                     return None, "Недостаточно средств для Premium."
 
                 balance_after = balance - price
-                connection.execute("UPDATE currency_balances SET amount = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND currency_code = ?", (balance_after, user_row["id"], currency_code))
+                deduct_cursor = connection.execute(
+                    "UPDATE currency_balances SET amount = amount - ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND currency_code = ? AND amount >= ?",
+                    (price, user_row["id"], currency_code, price),
+                )
+
+                if deduct_cursor.rowcount != 1:
+                    connection.rollback()
+                    return None, "Недостаточно средств для Premium."
 
             connection.execute(
                 """

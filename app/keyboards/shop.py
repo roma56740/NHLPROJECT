@@ -12,6 +12,7 @@ def build_shop_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🎁 Паки в магазине", callback_data="shop:packs:1")],
+            [InlineKeyboardButton(text="💵 Купить Рубли", callback_data="shop:buy_rubles")],
             [InlineKeyboardButton(text="📜 История покупок", callback_data="shop:history:1")],
             [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu:main")],
         ]

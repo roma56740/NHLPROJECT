@@ -153,6 +153,7 @@ Premium: <b>{premium_status(profile)}</b>
 
 <b>🔐 Профиль</b>
 Карточки: <b>{active_hidden(profile.privacy_public_cards)}</b>
+Обмены: <b>{'закрыты' if profile.trade_blocked else 'открыты'}</b>
 Статус: <b>{player_status(profile)}</b>
 """.strip()
 

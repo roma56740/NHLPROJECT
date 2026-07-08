@@ -1,3 +1,5 @@
+from html import escape
+
 from app.services.security import (
     SecurityCardsPage,
     SecurityLogsPage,
@@ -75,12 +77,12 @@ def build_security_users_page_text(page: SecurityUsersPage) -> str:
 
 
 def build_security_user_profile_text(profile: SecurityUserProfile) -> str:
-    username = f"@{profile.username}" if profile.username else "не указан"
+    username = f"@{escape(profile.username, quote=False)}" if profile.username else "не указан"
     status = "🚫 заблокирован" if profile.is_banned else "✅ активен"
     return f"""
 <b>🛡 Карточка безопасности</b>
 
-👤 Игрок: <b>{profile.nickname}</b>
+👤 Игрок: <b>{escape(profile.nickname, quote=False)}</b>
 🔗 Username: <b>{username}</b>
 🆔 Telegram ID: <code>{profile.telegram_id}</code>
 🏆 Лига: <b>{profile.league}</b>

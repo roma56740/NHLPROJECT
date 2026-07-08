@@ -11,7 +11,7 @@ def is_admin(user_id: int | None) -> bool:
         return True
 
     try:
-        connection = sqlite3.connect(settings.database_path)
+        connection = sqlite3.connect(settings.database_path, timeout=30)
         connection.row_factory = sqlite3.Row
         try:
             row = connection.execute(

@@ -22,6 +22,8 @@ from app.services.shop import (
 )
 from app.services.users import get_player_profile_by_telegram_id
 from app.texts.shop import (
+    RUBLES_PURCHASE_TEXT,
+    build_shop_main_text,
     SHOP_MAIN_TEXT,
     build_shop_confirm_text,
     build_shop_history_text,
@@ -83,7 +85,10 @@ async def edit_or_send(callback: CallbackQuery, text: str, reply_markup=None) ->
 
 
 async def show_shop_main(callback: CallbackQuery) -> None:
-    await edit_or_send(callback, SHOP_MAIN_TEXT, reply_markup=build_shop_main_keyboard())
+    profile = await get_current_player(callback)
+    if profile is None:
+        return
+    await edit_or_send(callback, build_shop_main_text(profile), reply_markup=build_shop_main_keyboard())
 
 
 async def show_shop_packs_page(callback: CallbackQuery, page: int) -> None:
@@ -179,12 +184,18 @@ async def shop_button(message: Message) -> None:
         return
 
     await safe_delete_message(message)
-    await message.answer(SHOP_MAIN_TEXT, reply_markup=build_shop_main_keyboard())
+    await message.answer(build_shop_main_text(profile), reply_markup=build_shop_main_keyboard())
 
 
 @router.callback_query(F.data == "shop:main")
 async def shop_main_callback(callback: CallbackQuery) -> None:
     await show_shop_main(callback)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "shop:buy_rubles")
+async def shop_buy_rubles_callback(callback: CallbackQuery) -> None:
+    await edit_or_send(callback, RUBLES_PURCHASE_TEXT, reply_markup=build_shop_main_keyboard())
     await callback.answer()
 
 

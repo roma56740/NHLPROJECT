@@ -89,3 +89,9 @@ def build_match_details_keyboard(page: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🏒 Найти соперника", callback_data="matches:play")],
         ]
     )
+
+
+def build_match_captcha_keyboard(options: list[str]) -> InlineKeyboardMarkup:
+    row = [InlineKeyboardButton(text=opt, callback_data=f"matches:captcha:{opt}") for opt in options]
+    return InlineKeyboardMarkup(inline_keyboard=[row, [InlineKeyboardButton(text="⬅️ Отмена", callback_data="matches:main")]])
+

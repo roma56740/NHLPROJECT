@@ -1,7 +1,7 @@
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from app.keyboards.lineup import (
     LINEUP_CARDS_PER_PAGE,
@@ -10,6 +10,7 @@ from app.keyboards.lineup import (
     build_lineup_slot_cards_keyboard,
 )
 from app.services.lineup import (
+    auto_fill_best_lineup,
     clear_lineup,
     get_lineup_cards_page,
     get_lineup_overview,
@@ -17,6 +18,7 @@ from app.services.lineup import (
     remove_lineup_slot,
     set_lineup_card,
 )
+from app.services.renders import render_lineup_image
 from app.services.users import get_player_profile_by_telegram_id
 from app.texts.lineup import LINEUP_CLEAR_CONFIRM_TEXT, build_lineup_text, build_slot_cards_text
 from app.utils.messages import safe_delete_callback_message, safe_delete_message
@@ -53,6 +55,48 @@ async def edit_or_send(callback: CallbackQuery, text: str, reply_markup=None) ->
         )
 
 
+
+
+async def send_lineup_view(target: CallbackQuery | Message, overview, reply_markup=None) -> None:
+    if isinstance(target, CallbackQuery):
+        message = target.message
+        bot = target.bot
+        user_id = target.from_user.id
+    else:
+        message = target
+        bot = target.bot
+        user_id = target.from_user.id if target.from_user else 0
+
+    if not isinstance(message, Message):
+        return
+
+    text = build_lineup_text(overview)
+
+    try:
+        render_path = render_lineup_image(overview, user_id=user_id)
+    except Exception:
+        render_path = None
+
+    if render_path is None:
+        if isinstance(target, CallbackQuery):
+            await edit_or_send(target, text, reply_markup=reply_markup)
+        else:
+            await message.answer(text, reply_markup=reply_markup)
+        return
+
+    if isinstance(target, CallbackQuery):
+        await safe_delete_callback_message(target)
+    else:
+        await safe_delete_message(message)
+
+    await bot.send_photo(
+        chat_id=message.chat.id,
+        photo=FSInputFile(render_path),
+        caption=text,
+        reply_markup=reply_markup,
+    )
+
+
 async def get_current_player(callback_or_message: CallbackQuery | Message):
     from_user = callback_or_message.from_user
 
@@ -70,11 +114,7 @@ async def show_lineup(callback: CallbackQuery) -> None:
         return
 
     overview = await get_lineup_overview(profile.id)
-    await edit_or_send(
-        callback,
-        build_lineup_text(overview),
-        reply_markup=build_lineup_main_keyboard(overview),
-    )
+    await send_lineup_view(callback, overview, reply_markup=build_lineup_main_keyboard(overview))
 
 
 async def show_slot_cards(callback: CallbackQuery, slot_code: str, page: int) -> None:
@@ -117,10 +157,7 @@ async def lineup_button(message: Message, state: FSMContext) -> None:
     await safe_delete_message(message)
 
     overview = await get_lineup_overview(profile.id)
-    await message.answer(
-        build_lineup_text(overview),
-        reply_markup=build_lineup_main_keyboard(overview),
-    )
+    await send_lineup_view(message, overview, reply_markup=build_lineup_main_keyboard(overview))
 
 
 @router.callback_query(F.data == "lineup:main")
@@ -179,6 +216,25 @@ async def lineup_remove_slot(callback: CallbackQuery, state: FSMContext) -> None
 
     slot_code = callback.data.split(":")[-1] if callback.data else ""
     result = await remove_lineup_slot(user_id=profile.id, slot_code=slot_code)
+
+    if not result.success:
+        await callback.answer(result.message, show_alert=True)
+        return
+
+    await show_lineup(callback)
+    await callback.answer(result.message)
+
+
+@router.callback_query(F.data == "lineup:auto")
+async def lineup_auto_fill(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    profile = await get_current_player(callback)
+
+    if profile is None:
+        await callback.answer("Открой игру через /start", show_alert=True)
+        return
+
+    result = await auto_fill_best_lineup(profile.id)
 
     if not result.success:
         await callback.answer(result.message, show_alert=True)

@@ -1,5 +1,6 @@
 from html import escape
 
+from app.services.currencies import format_currency_amount
 from app.services.shop import ShopHistoryPage, ShopPackItem, ShopPacksPage, ShopPurchaseResult
 
 
@@ -138,3 +139,21 @@ def build_shop_history_text(page: ShopHistoryPage) -> str:
 
 {chr(10).join(lines)}
 """.strip()
+
+
+RUBLES_PURCHASE_TEXT = "💵 <b>Рубли</b>\n\nЗа покупкой рублей можно отписать — @E4RFQ"
+
+
+def build_shop_balance_line(profile) -> str:
+    if not profile.balances:
+        return ""
+    parts = [format_currency_amount(balance) for balance in profile.balances]
+    return "💰 <b>Твой баланс</b>\n" + "\n".join(parts) + "\n\n"
+
+
+def build_shop_main_text(profile) -> str:
+    return (
+        "<b>🛒 Магазин</b>\n\n"
+        + build_shop_balance_line(profile)
+        + "Здесь можно купить паки за игровые валюты и сразу добавить их в коллекцию.\n\nВыбери раздел ниже."
+    )

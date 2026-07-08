@@ -1,3 +1,4 @@
+from app.services.salary import format_salary
 from html import escape
 from pathlib import Path
 
@@ -55,6 +56,13 @@ ADMIN_CARDS_COUNTRY_TEXT = """
 
 Пример: <b>Canada</b>
 """.strip()
+
+ADMIN_CARDS_SALARY_TEXT = """
+💵 <b>Зарплата игрока</b>
+
+Введи зарплату в миллионах, например: <b>5.5</b> (это $5.5M). 0 — без зарплаты.
+""".strip()
+
 
 ADMIN_CARDS_COLLECTION_TEXT = """
 <b>🗂 Коллекция</b>
@@ -168,6 +176,7 @@ def build_card_profile_text(card: CardProfile) -> str:
 🌍 Страна: <b>{safe(card.country)}</b>
 🗂 Коллекция: <b>{safe(card.collection_name)}</b>
 💎 Редкость: <b>{safe(card.rarity)}</b>
+💵 Зарплата: <b>{format_salary(card.salary)}</b>
 👁 Статус: <b>{active_text(card.active)}</b>
 
 🖼 Фото: <b>{safe(image_file_name(card.image_path))}</b>
@@ -182,6 +191,7 @@ def build_card_draft_text(draft: CardDraft) -> str:
 🏒 Имя: <b>{safe(draft.name)}</b>
 🥅 Позиция: <b>{safe(draft.position)}</b>
 ⭐ OVR: <b>{draft.overall}</b>
+💵 Зарплата: <b>{format_salary(draft.salary)}</b>
 🛡 Команда: <b>{safe(draft.team)}</b>
 🌍 Страна: <b>{safe(draft.country)}</b>
 🗂 Коллекция: <b>{safe(draft.collection_name)}</b>
@@ -245,6 +255,7 @@ def get_edit_field_title(field: str) -> str:
         "team": "🛡 Новая команда",
         "country": "🌍 Новая страна",
         "collection": "🗂 Новая коллекция",
+        "salary": "💵 Новая зарплата (в млн, напр. 5.5)",
     }
 
     return titles.get(field, "✍️ Новое значение")

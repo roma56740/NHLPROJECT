@@ -38,10 +38,12 @@ SETTING_LABELS = {
     "maintenance_mode": "🛠 Режим обслуживания",
     "season_key": "🎮 Текущий сезон",
     "win_coins_reward": "🏆 Coins за победу",
+    "loss_coins_reward": "💔 Coins за поражение",
+    "bot_handicap_extra": "🤖 Ослабление ботов",
     "matchmaking_min_wait_seconds": "⏱ Минимум поиска",
     "matchmaking_max_wait_seconds": "⏱ Максимум поиска",
     "start_coins": "🪙 Стартовые Coins",
-    "start_energy": "⚡ Стартовая Energy",
+    "start_energy": "💵 Стартовые Рубли",
     "start_rank_points": "🏅 Стартовые Rank-point",
 }
 
@@ -50,7 +52,7 @@ def format_setting_value(setting: GameSetting) -> str:
     if setting.key == "maintenance_mode":
         return "включён" if setting.value == "1" else "выключен"
 
-    if setting.key in {"win_coins_reward", "start_coins", "start_energy", "start_rank_points"}:
+    if setting.key in {"win_coins_reward", "loss_coins_reward", "start_coins", "start_energy", "start_rank_points", "bot_handicap_extra"}:
         return f"{int(setting.value):,}".replace(",", " ") if str(setting.value).isdigit() else setting.value
 
     if setting.key in {"matchmaking_min_wait_seconds", "matchmaking_max_wait_seconds"}:

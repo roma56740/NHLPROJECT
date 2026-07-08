@@ -12,6 +12,10 @@ from app.keyboards.admin_wallets import (
     build_admin_wallets_main_keyboard,
     build_admin_wallets_users_keyboard,
 )
+from app.services.admin_notifications import (
+    build_currency_reward_notification,
+    send_admin_reward_notification,
+)
 from app.services.admin_wallets import (
     change_wallet_balance,
     get_wallet_currencies,
@@ -366,6 +370,15 @@ async def admin_wallets_amount(message: Message, state: FSMContext) -> None:
         message_id=message_id,
         text=build_admin_wallet_success_text(result),
         reply_markup=build_admin_wallet_user_keyboard(user_id=user_id, page=page),
+    )
+    signed_amount = result.amount if result.action == "add" else -result.amount
+    await send_admin_reward_notification(
+        message.bot,
+        result.profile.telegram_id,
+        build_currency_reward_notification(
+            f"{result.currency.icon} {result.currency.name}",
+            signed_amount,
+        ),
     )
 
 

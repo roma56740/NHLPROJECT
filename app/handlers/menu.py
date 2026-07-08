@@ -1,73 +1,73 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
-from app.keyboards.inline import build_back_to_menu_keyboard
 from app.keyboards.reply import (
-    ADMIN_MAIN_TEXTS,
-    USER_MAIN_TEXTS,
     build_admin_main_keyboard,
     build_user_main_keyboard,
 )
-from app.utils.messages import safe_delete_callback_message
+from app.services.currencies import format_currency_amount
+from app.services.matches import get_match_main_info
+from app.services.users import get_player_profile_by_telegram_id
+from app.utils.messages import safe_delete_callback_message, safe_delete_message
 from app.utils.users import is_admin
 
 
 router = Router()
 
-
-USER_SECTION_TEXTS: dict[str, str] = {
-    "🏠 Главная": "<b>Главная</b>\n\nЗдесь будет краткая сводка профиля: баланс, лига, OVR состава, активные события и быстрые действия.",
-    "🏒 Играть": "<b>Играть</b>\n\nЗдесь будет поиск соперника, матч против игрока, матч против бота и история матчей.",
-    "🃏 Карты": "<b>Карты</b>\n\nЗдесь будет коллекция карточек, поиск, фильтры, сортировка, просмотр и быстрая продажа.",
-    "🧩 Состав": "<b>Состав</b>\n\nЗдесь будет выбор 1 вратаря, 2 защитников, 3 нападающих, расчет OVR и химии.",
-    "🎁 Паки": "<b>Паки</b>\n\nЗдесь будут мои паки, открытие паков, паки с несколькими картами и история открытий.",
-    "🛒 Магазин": "<b>Магазин</b>\n\nЗдесь будут покупки за Coins, Energy и Rank-point, постоянные и временные товары.",
-    "🎯 Задания": "<b>Задания</b>\n\nЗдесь будут ежедневные и сезонные задания, прогресс и получение наград.",
-    "🎟 Hockey Pass": "<b>Hockey Pass</b>\n\nЗдесь будет прогресс по 40 уровням, бесплатная ветка и Premium-награды.",
-    "🏆 Рейтинг": "<b>Рейтинг</b>\n\nЗдесь будут лиги NCAA, AHL, NHL, OLYMPICS, очки и таблица лидеров.",
-    "🤝 Сообщество": "<b>Сообщество</b>\n\nЗдесь будут обмены, кланы и просмотр профилей других игроков.",
-    "👤 Профиль": "<b>Профиль</b>\n\nЗдесь будут никнейм, статистика, валюты, победы, поражения и настройки приватности.",
-}
+HOME_BUTTON_TEXT = "🏠 Главная"
 
 
-ADMIN_SECTION_TEXTS: dict[str, str] = {
-    "📊 Админ-панель": "<b>Админ-панель</b>\n\nЗдесь будет сводка по игрокам, матчам, пакам, экономике и активности.",
-    "🃏 Карточки": "<b>Карточки</b>\n\nЗдесь будет добавление, редактирование, отключение, поиск, фильтры и импорт карточек.",
-    "🎁 Паки": "<b>Паки</b>\n\nЗдесь будет создание паков, настройка количества карт, шансов, гарантий, цены и валюты.",
-    "🛒 Магазин": "<b>Магазин</b>\n\nЗдесь будут товары, постоянные паки, недельная ротация и специальные предложения.",
-    "👥 Пользователи": "<b>Пользователи</b>\n\nЗдесь будет поиск игроков, выдача валют, карт, паков, бан и просмотр истории.",
-    "🎟 Hockey Pass": "<b>Hockey Pass</b>\n\nЗдесь будет настройка уровней, BP Points, бесплатных и Premium-наград.",
-    "🎯 Задания": "<b>Задания</b>\n\nЗдесь будет управление ежедневными и сезонными заданиями.",
-    "🏆 Лиги и рейтинг": "<b>Лиги и рейтинг</b>\n\nЗдесь будет настройка NCAA, AHL, NHL, OLYMPICS, очков и rank-point.",
-    "🧪 Химия": "<b>Химия</b>\n\nЗдесь будет настройка сезонных комбинаций по коллекции, стране и команде.",
-    "🎪 События": "<b>События</b>\n\nЗдесь будут DEAD LEGENDS, сезонные события, прогресс и награды.",
-    "💱 Валюты": "<b>Валюты</b>\n\nЗдесь будет управление Coins, Energy, Rank-point и дополнительными валютами.",
-    "🤝 Кланы": "<b>Кланы</b>\n\nЗдесь будет модерация кланов, участников, приглашений и рейтинга.",
-    "🔁 Обмены": "<b>Обмены</b>\n\nЗдесь будет история обменов, спорные обмены и trade lock.",
-    "🛡 Безопасность": "<b>Безопасность</b>\n\nЗдесь будет антиавтокликер, капча и подозрительная активность.",
-    "📢 Рассылка": "<b>Рассылка</b>\n\nЗдесь будет отправка сообщений игрокам с предпросмотром и подтверждением.",
-    "⚙️ Настройки": "<b>Настройки</b>\n\nЗдесь будут сезон, стартовые ресурсы, тексты бота, админы и общие настройки.",
-}
+def build_home_text(profile, match_info) -> str:
+    """Компактная сводка: всё важное на одном экране, без лишних переходов."""
+    from html import escape
+
+    lines = [
+        "🏒 <b>NHL Card Bot</b>",
+        "",
+        f"👤 <b>{escape(profile.nickname, quote=False)}</b> · {escape(profile.league, quote=False)}",
+        f"⭐ Очки рейтинга: <b>{profile.rating_points}</b>",
+        f"🎟 Hockey Pass: уровень <b>{profile.hockey_pass_level}</b>",
+    ]
+
+    if match_info is not None:
+        if match_info.is_ready and match_info.lineup_ovr is not None:
+            lines.append(f"🧩 Состав: OVR <b>{match_info.lineup_ovr}</b> · готов к матчу ✅")
+        else:
+            lines.append(
+                f"🧩 Состав: заполнено {match_info.filled_count}/{match_info.total_slots} · нужно собрать 🧩"
+            )
+
+    if profile.balances:
+        lines.append("")
+        lines.append("💰 <b>Баланс</b>")
+        for balance in profile.balances:
+            lines.append(format_currency_amount(balance))
+
+    lines.append("")
+    lines.append("Выбери раздел на клавиатуре ниже 👇")
+    return "\n".join(lines)
 
 
-@router.message(F.text.in_(USER_MAIN_TEXTS | ADMIN_MAIN_TEXTS))
-async def main_menu_button(message: Message) -> None:
-    user_id = message.from_user.id if message.from_user else None
-    text = message.text or ""
-
-    if text in ADMIN_MAIN_TEXTS and not is_admin(user_id):
-        await message.answer("Раздел доступен только администратору.")
+async def show_home(message: Message, telegram_id: int) -> None:
+    if is_admin(telegram_id):
+        await message.answer("🏠 Главное меню админ-панели.", reply_markup=build_admin_main_keyboard())
         return
 
-    section_text = ADMIN_SECTION_TEXTS.get(text) or USER_SECTION_TEXTS.get(text)
-
-    if section_text is None:
+    profile = await get_player_profile_by_telegram_id(telegram_id)
+    if profile is None:
+        await message.answer("🏒 Открой игру через /start.", reply_markup=build_user_main_keyboard())
         return
 
-    await message.answer(
-        section_text,
-        reply_markup=build_back_to_menu_keyboard(),
-    )
+    match_info = await get_match_main_info(telegram_id)
+    await message.answer(build_home_text(profile, match_info), reply_markup=build_user_main_keyboard())
+
+
+@router.message(F.text == HOME_BUTTON_TEXT)
+async def home_button(message: Message) -> None:
+    if message.from_user is None:
+        return
+    await safe_delete_message(message)
+    await show_home(message, message.from_user.id)
 
 
 @router.callback_query(F.data == "menu:main")
@@ -80,20 +80,28 @@ async def back_to_main_menu(callback: CallbackQuery) -> None:
         return
 
     chat_id = message.chat.id
-
     await safe_delete_callback_message(callback)
 
     if is_admin(user_id):
         await callback.bot.send_message(
             chat_id=chat_id,
-            text="Главное меню админ-панели.",
+            text="🏠 Главное меню админ-панели.",
             reply_markup=build_admin_main_keyboard(),
         )
     else:
-        await callback.bot.send_message(
-            chat_id=chat_id,
-            text="Главное меню.",
-            reply_markup=build_user_main_keyboard(),
-        )
+        profile = await get_player_profile_by_telegram_id(user_id) if user_id else None
+        if profile is None:
+            await callback.bot.send_message(
+                chat_id=chat_id,
+                text="🏒 Главное меню.",
+                reply_markup=build_user_main_keyboard(),
+            )
+        else:
+            match_info = await get_match_main_info(user_id)
+            await callback.bot.send_message(
+                chat_id=chat_id,
+                text=build_home_text(profile, match_info),
+                reply_markup=build_user_main_keyboard(),
+            )
 
     await callback.answer()

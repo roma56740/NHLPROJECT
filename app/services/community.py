@@ -8,6 +8,7 @@ from app.database.db import get_connection
 from app.services.admin_users import clean_search_query
 
 COMMUNITY_PER_PAGE = 5
+CLAN_MAX_MEMBERS = 10
 TRADE_CARD_LIMIT = 3
 
 
@@ -114,6 +115,8 @@ class TradeOfferListItem:
     id: int
     creator_user_id: int
     creator_nickname: str
+    target_user_id: int | None
+    target_nickname: str | None
     wanted_type: str
     wanted_currency_code: str | None
     wanted_currency_icon: str | None
@@ -139,6 +142,8 @@ class TradeOfferProfile:
     id: int
     creator_user_id: int
     creator_nickname: str
+    target_user_id: int | None
+    target_nickname: str | None
     accepted_by_user_id: int | None
     accepted_by_nickname: str | None
     wanted_type: str
@@ -201,6 +206,9 @@ class CommunityActionResult:
     ok: bool
     title: str
     description: str
+    offer_id: int | None = None
+    target_telegram_id: int | None = None
+    creator_telegram_id: int | None = None
 
 
 def normalize_ids(values: list[int] | None) -> list[int]:
@@ -293,6 +301,60 @@ async def get_players_page(page: int = 1, per_page: int = COMMUNITY_PER_PAGE, se
         total_count=total_count,
         search=clean_search,
     )
+
+
+async def get_direct_trade_players_page(user_id: int, page: int = 1, per_page: int = COMMUNITY_PER_PAGE, search: str | None = None) -> CommunityPlayersPage:
+    clean_search = clean_search_query(search)
+    where_sql, params = build_player_search_filter(clean_search)
+    extra = "privacy_public_cards = 1 AND is_banned = 0 AND trade_blocked = 0 AND id != ?"
+    if where_sql:
+        where_sql = where_sql.replace("WHERE", f"WHERE {extra} AND", 1)
+        params = [user_id, *params]
+    else:
+        where_sql = f"WHERE {extra}"
+        params = [user_id]
+
+    with get_connection() as connection:
+        total_count = int(connection.execute(f"SELECT COUNT(*) AS total_count FROM users {where_sql}", params).fetchone()["total_count"])
+        pages_count = max(1, ceil(total_count / per_page))
+        safe_page = min(max(page, 1), pages_count)
+        offset = (safe_page - 1) * per_page
+        rows = connection.execute(
+            f"""
+            SELECT id, nickname, username, league, rating_points, wins, losses, matches_played, privacy_public_cards
+            FROM users
+            {where_sql}
+            ORDER BY rating_points DESC, wins DESC, matches_played DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*params, per_page, offset],
+        ).fetchall()
+
+    return CommunityPlayersPage(
+        players=[
+            CommunityPlayerItem(
+                id=row["id"], nickname=row["nickname"], username=row["username"], league=row["league"],
+                rating_points=row["rating_points"], wins=row["wins"], losses=row["losses"],
+                matches_played=row["matches_played"], privacy_public_cards=bool(row["privacy_public_cards"]),
+            )
+            for row in rows
+        ],
+        page=safe_page, pages_count=pages_count, total_count=total_count, search=clean_search,
+    )
+
+
+async def get_trade_offer_creator_telegram_id(offer_id: int) -> int | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT users.telegram_id
+            FROM trade_offers
+            JOIN users ON users.id = trade_offers.creator_user_id
+            WHERE trade_offers.id = ?
+            """,
+            (offer_id,),
+        ).fetchone()
+    return int(row["telegram_id"]) if row else None
 
 
 def row_to_public_card(row) -> PublicCardItem:
@@ -589,6 +651,27 @@ async def get_selected_card_choices(selected_card_ids: list[int]) -> list[TradeC
     return [trade_card_choice_from_row(row) for row in rows]
 
 
+def get_user_trade_info(connection, user_id: int):
+    return connection.execute(
+        """
+        SELECT id, telegram_id, nickname, privacy_public_cards, is_banned, trade_blocked
+        FROM users
+        WHERE id = ?
+        """,
+        (user_id,),
+    ).fetchone()
+
+
+def build_direct_trade_notification(creator_nickname: str, offer_id: int) -> str:
+    return f"""
+<b>🔁 Новое предложение обмена</b>
+
+Игрок <b>{creator_nickname}</b> отправил тебе личный обмен.
+
+Открой предложение и выбери действие: принять или отказаться.
+""".strip()
+
+
 async def create_trade_offer(
     creator_user_id: int,
     offered_user_card_ids: list[int],
@@ -596,6 +679,7 @@ async def create_trade_offer(
     wanted_card_ids: list[int] | None = None,
     wanted_currency_code: str | None = None,
     wanted_currency_amount: int = 0,
+    target_user_id: int | None = None,
 ) -> CommunityActionResult:
     offered_user_card_ids = normalize_ids(offered_user_card_ids)
     wanted_card_ids = normalize_ids(wanted_card_ids)
@@ -610,6 +694,22 @@ async def create_trade_offer(
         return CommunityActionResult(False, "Обмен не создан", "Укажи валюту и сумму для обмена.")
 
     with get_connection() as connection:
+        creator_row = get_user_trade_info(connection, creator_user_id)
+        if creator_row is None or bool(creator_row["trade_blocked"]):
+            return CommunityActionResult(False, "Обмены закрыты", "Сейчас обмены для игрока недоступны.")
+
+        target_row = None
+        if target_user_id is not None:
+            if target_user_id == creator_user_id:
+                return CommunityActionResult(False, "Обмен не создан", "Нельзя отправить личный обмен самому себе.")
+            target_row = get_user_trade_info(connection, target_user_id)
+            if target_row is None or bool(target_row["is_banned"]):
+                return CommunityActionResult(False, "Игрок не найден", "Выбранный игрок сейчас недоступен.")
+            if not bool(target_row["privacy_public_cards"]):
+                return CommunityActionResult(False, "Обмен не создан", "Игрок скрыл коллекцию карточек, поэтому личный обмен ему недоступен.")
+            if bool(target_row["trade_blocked"]):
+                return CommunityActionResult(False, "Обмен не создан", "У выбранного игрока сейчас закрыты обмены.")
+
         placeholders = ",".join("?" for _ in offered_user_card_ids)
         rows = connection.execute(
             f"""
@@ -645,15 +745,17 @@ async def create_trade_offer(
             """
             INSERT INTO trade_offers (
                 creator_user_id,
+                target_user_id,
                 wanted_type,
                 wanted_currency_code,
                 wanted_currency_amount,
                 status
             )
-            VALUES (?, ?, ?, ?, 'open')
+            VALUES (?, ?, ?, ?, ?, 'open')
             """,
             (
                 creator_user_id,
+                target_user_id,
                 wanted_type,
                 wanted_currency_code if wanted_type == "currency" else None,
                 wanted_currency_amount if wanted_type == "currency" else 0,
@@ -680,15 +782,27 @@ async def create_trade_offer(
 
         connection.commit()
 
-    return CommunityActionResult(True, "Обмен опубликован", "Предложение появилось на рынке обменов.")
+    if target_user_id is not None:
+        return CommunityActionResult(
+            True,
+            "Обмен отправлен",
+            "Личное предложение отправлено игроку.",
+            offer_id=offer_id,
+            target_telegram_id=int(target_row["telegram_id"]) if target_row is not None else None,
+            creator_telegram_id=int(creator_row["telegram_id"]),
+        )
+
+    return CommunityActionResult(True, "Обмен опубликован", "Предложение появилось на рынке обменов.", offer_id=offer_id, creator_telegram_id=int(creator_row["telegram_id"]))
 
 
 def build_trade_mode_filter(mode: str, user_id: int | None = None) -> tuple[str, list[object]]:
     if mode == "my" and user_id is not None:
-        return "WHERE trade_offers.creator_user_id = ?", [user_id]
+        return "WHERE trade_offers.creator_user_id = ? OR trade_offers.target_user_id = ?", [user_id, user_id]
+    if mode == "incoming" and user_id is not None:
+        return "WHERE trade_offers.target_user_id = ? AND trade_offers.status = 'open'", [user_id]
     if mode == "admin":
         return "", []
-    return "WHERE trade_offers.status = 'open'", []
+    return "WHERE trade_offers.status = 'open' AND trade_offers.target_user_id IS NULL", []
 
 
 async def get_trade_offers_page(mode: str = "market", user_id: int | None = None, page: int = 1, per_page: int = COMMUNITY_PER_PAGE) -> TradeOffersPage:
@@ -704,6 +818,7 @@ async def get_trade_offers_page(mode: str = "market", user_id: int | None = None
         rows = connection.execute(
             f"""
             SELECT trade_offers.id, trade_offers.creator_user_id, users.nickname AS creator_nickname,
+                   trade_offers.target_user_id, target.nickname AS target_nickname,
                    trade_offers.wanted_type, trade_offers.wanted_currency_code, currencies.icon AS wanted_currency_icon,
                    currencies.name AS wanted_currency_name, trade_offers.wanted_currency_amount, trade_offers.status,
                    trade_offers.created_at,
@@ -711,6 +826,7 @@ async def get_trade_offers_page(mode: str = "market", user_id: int | None = None
                    (SELECT COALESCE(SUM(quantity), 0) FROM trade_offer_wanted_cards WHERE offer_id = trade_offers.id) AS wanted_cards_count
             FROM trade_offers
             JOIN users ON users.id = trade_offers.creator_user_id
+            LEFT JOIN users target ON target.id = trade_offers.target_user_id
             LEFT JOIN currencies ON currencies.code = trade_offers.wanted_currency_code
             {where_sql}
             ORDER BY trade_offers.id DESC
@@ -725,6 +841,8 @@ async def get_trade_offers_page(mode: str = "market", user_id: int | None = None
                 id=row["id"],
                 creator_user_id=row["creator_user_id"],
                 creator_nickname=row["creator_nickname"],
+                target_user_id=row["target_user_id"],
+                target_nickname=row["target_nickname"],
                 wanted_type=row["wanted_type"],
                 wanted_currency_code=row["wanted_currency_code"],
                 wanted_currency_icon=row["wanted_currency_icon"],
@@ -749,12 +867,14 @@ async def get_trade_offer_profile(offer_id: int) -> TradeOfferProfile | None:
         row = connection.execute(
             """
             SELECT trade_offers.id, trade_offers.creator_user_id, creator.nickname AS creator_nickname,
+                   trade_offers.target_user_id, target.nickname AS target_nickname,
                    trade_offers.accepted_by_user_id, accepter.nickname AS accepted_by_nickname,
                    trade_offers.wanted_type, trade_offers.wanted_currency_code,
                    currencies.icon AS wanted_currency_icon, currencies.name AS wanted_currency_name,
                    trade_offers.wanted_currency_amount, trade_offers.status, trade_offers.created_at, trade_offers.accepted_at
             FROM trade_offers
             JOIN users creator ON creator.id = trade_offers.creator_user_id
+            LEFT JOIN users target ON target.id = trade_offers.target_user_id
             LEFT JOIN users accepter ON accepter.id = trade_offers.accepted_by_user_id
             LEFT JOIN currencies ON currencies.code = trade_offers.wanted_currency_code
             WHERE trade_offers.id = ?
@@ -795,6 +915,8 @@ async def get_trade_offer_profile(offer_id: int) -> TradeOfferProfile | None:
         id=row["id"],
         creator_user_id=row["creator_user_id"],
         creator_nickname=row["creator_nickname"],
+        target_user_id=row["target_user_id"],
+        target_nickname=row["target_nickname"],
         accepted_by_user_id=row["accepted_by_user_id"],
         accepted_by_nickname=row["accepted_by_nickname"],
         wanted_type=row["wanted_type"],
@@ -813,7 +935,7 @@ async def get_trade_offer_profile(offer_id: int) -> TradeOfferProfile | None:
 async def accept_trade_offer(offer_id: int, accepter_user_id: int) -> CommunityActionResult:
     with get_connection() as connection:
         try:
-            connection.execute("BEGIN")
+            connection.execute("BEGIN IMMEDIATE")
             offer = connection.execute(
                 "SELECT * FROM trade_offers WHERE id = ?",
                 (offer_id,),
@@ -824,6 +946,14 @@ async def accept_trade_offer(offer_id: int, accepter_user_id: int) -> CommunityA
             if offer["creator_user_id"] == accepter_user_id:
                 connection.rollback()
                 return CommunityActionResult(False, "Обмен недоступен", "Свое предложение принять нельзя.")
+            accepter_row = get_user_trade_info(connection, accepter_user_id)
+            creator_row = get_user_trade_info(connection, int(offer["creator_user_id"]))
+            if accepter_row is None or bool(accepter_row["trade_blocked"]) or creator_row is None or bool(creator_row["trade_blocked"]):
+                connection.rollback()
+                return CommunityActionResult(False, "Обмен недоступен", "Для одного из игроков обмены сейчас закрыты.")
+            if offer["target_user_id"] is not None and int(offer["target_user_id"]) != accepter_user_id:
+                connection.rollback()
+                return CommunityActionResult(False, "Обмен недоступен", "Личное предложение адресовано другому игроку.")
 
             offered_rows = connection.execute(
                 "SELECT user_card_id FROM trade_offer_cards WHERE offer_id = ?",
@@ -860,10 +990,13 @@ async def accept_trade_offer(offer_id: int, accepter_user_id: int) -> CommunityA
                     connection.rollback()
                     return CommunityActionResult(False, "Не хватает валюты", "На балансе недостаточно средств для обмена.")
 
-                connection.execute(
-                    "UPDATE currency_balances SET amount = amount - ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND currency_code = ?",
-                    (amount, accepter_user_id, offer["wanted_currency_code"]),
+                deduct_cursor = connection.execute(
+                    "UPDATE currency_balances SET amount = amount - ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND currency_code = ? AND amount >= ?",
+                    (amount, accepter_user_id, offer["wanted_currency_code"], amount),
                 )
+                if deduct_cursor.rowcount != 1:
+                    connection.rollback()
+                    return CommunityActionResult(False, "Не хватает валюты", "На балансе недостаточно средств для обмена.")
                 connection.execute(
                     """
                     INSERT INTO currency_balances (user_id, currency_code, amount)
@@ -925,6 +1058,26 @@ async def accept_trade_offer(offer_id: int, accepter_user_id: int) -> CommunityA
             raise
 
     return CommunityActionResult(True, "Обмен завершён", "Карточки и награды уже в новых коллекциях.")
+
+
+async def decline_trade_offer(offer_id: int, user_id: int) -> CommunityActionResult:
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT id, creator_user_id, target_user_id, status
+            FROM trade_offers
+            WHERE id = ?
+            """,
+            (offer_id,),
+        ).fetchone()
+        if row is None or row["status"] != "open" or row["target_user_id"] != user_id:
+            return CommunityActionResult(False, "Обмен недоступен", "Предложение уже закрыто или адресовано другому игроку.")
+        connection.execute(
+            "UPDATE trade_offers SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (offer_id,),
+        )
+        connection.commit()
+    return CommunityActionResult(True, "Обмен отклонён", "Предложение закрыто без обмена.", offer_id=offer_id)
 
 
 async def cancel_trade_offer(offer_id: int, user_id: int | None = None, admin: bool = False) -> CommunityActionResult:
@@ -1113,19 +1266,150 @@ async def create_clan(user_id: int, name: str, description: str) -> CommunityAct
 
 
 async def join_clan(user_id: int, clan_id: int) -> CommunityActionResult:
+    """Создаёт заявку на вступление. Игрок попадает в клан только после одобрения президента."""
     with get_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
         existing_member = connection.execute("SELECT id FROM clan_members WHERE user_id = ?", (user_id,)).fetchone()
         if existing_member:
+            connection.rollback()
             return CommunityActionResult(False, "Вступление недоступно", "Сначала нужно выйти из текущего клана.")
         clan = connection.execute("SELECT id FROM clans WHERE id = ? AND active = 1", (clan_id,)).fetchone()
         if clan is None:
+            connection.rollback()
             return CommunityActionResult(False, "Клан недоступен", "Клан закрыт или уже расформирован.")
+        members_count = int(connection.execute(
+            "SELECT COUNT(*) AS total_count FROM clan_members WHERE clan_id = ?",
+            (clan_id,),
+        ).fetchone()["total_count"])
+        if members_count >= CLAN_MAX_MEMBERS:
+            connection.rollback()
+            return CommunityActionResult(False, "Клан заполнен", f"В клане уже {CLAN_MAX_MEMBERS} игроков — это максимум. Попробуй другой клан.")
+
+        pending = connection.execute(
+            "SELECT id FROM clan_join_requests WHERE clan_id = ? AND user_id = ? AND status = 'pending'",
+            (clan_id, user_id),
+        ).fetchone()
+        if pending is not None:
+            connection.rollback()
+            return CommunityActionResult(False, "Заявка уже отправлена", "Твоя заявка на рассмотрении у президента клана.")
+
         connection.execute(
-            "INSERT INTO clan_members (clan_id, user_id, role) VALUES (?, ?, 'member')",
+            "INSERT INTO clan_join_requests (clan_id, user_id, status) VALUES (?, ?, 'pending')",
             (clan_id, user_id),
         )
         connection.commit()
-    return CommunityActionResult(True, "Ты в клане", "Добро пожаловать в новую команду.")
+    return CommunityActionResult(True, "Заявка отправлена", "Президент клана рассмотрит её. Придёт уведомление о решении.")
+
+
+async def get_clan_leaders_telegram_ids(clan_id: int) -> list[int]:
+    """Telegram-id президента и вице (кому слать уведомление о заявке)."""
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT users.telegram_id
+            FROM clan_members
+            JOIN users ON users.id = clan_members.user_id
+            WHERE clan_members.clan_id = ? AND clan_members.role IN ('leader', 'officer')
+              AND users.is_banned = 0
+            """,
+            (clan_id,),
+        ).fetchall()
+    return [int(row["telegram_id"]) for row in rows]
+
+
+async def get_pending_requests(clan_id: int) -> list:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT r.id, r.user_id, u.nickname, u.telegram_id
+            FROM clan_join_requests r
+            JOIN users u ON u.id = r.user_id
+            WHERE r.clan_id = ? AND r.status = 'pending'
+            ORDER BY r.created_at
+            """,
+            (clan_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+async def count_pending_requests(clan_id: int) -> int:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) AS n FROM clan_join_requests WHERE clan_id = ? AND status = 'pending'",
+            (clan_id,),
+        ).fetchone()
+    return int(row["n"])
+
+
+async def resolve_join_request(actor_user_id: int, request_id: int, approve: bool) -> tuple[CommunityActionResult, int | None]:
+    """Одобряет/отклоняет заявку. Возвращает (результат, telegram_id заявителя для уведомления)."""
+    with get_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+
+        actor = connection.execute(
+            "SELECT clan_id, role FROM clan_members WHERE user_id = ?",
+            (actor_user_id,),
+        ).fetchone()
+        if actor is None or actor["role"] not in ("leader", "officer"):
+            connection.rollback()
+            return CommunityActionResult(False, "Нет прав", "Рассматривать заявки могут президент и вице-президент."), None
+
+        request = connection.execute(
+            "SELECT id, clan_id, user_id, status FROM clan_join_requests WHERE id = ?",
+            (request_id,),
+        ).fetchone()
+        if request is None or request["status"] != "pending":
+            connection.rollback()
+            return CommunityActionResult(False, "Заявка недоступна", "Эта заявка уже обработана."), None
+        if int(request["clan_id"]) != int(actor["clan_id"]):
+            connection.rollback()
+            return CommunityActionResult(False, "Чужая заявка", "Эта заявка относится к другому клану."), None
+
+        applicant_id = int(request["user_id"])
+        applicant_row = connection.execute("SELECT telegram_id FROM users WHERE id = ?", (applicant_id,)).fetchone()
+        applicant_tg = int(applicant_row["telegram_id"]) if applicant_row else None
+
+        if not approve:
+            connection.execute(
+                "UPDATE clan_join_requests SET status = 'rejected', resolved_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (request_id,),
+            )
+            connection.commit()
+            return CommunityActionResult(True, "Заявка отклонена", "Игрок получит уведомление."), applicant_tg
+
+        # одобрение: проверяем, что игрок ещё не в клане и есть место
+        already = connection.execute("SELECT id FROM clan_members WHERE user_id = ?", (applicant_id,)).fetchone()
+        if already is not None:
+            connection.execute(
+                "UPDATE clan_join_requests SET status = 'rejected', resolved_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (request_id,),
+            )
+            connection.commit()
+            return CommunityActionResult(False, "Игрок уже в клане", "Заявка закрыта."), None
+
+        members_count = int(connection.execute(
+            "SELECT COUNT(*) AS n FROM clan_members WHERE clan_id = ?",
+            (int(actor["clan_id"]),),
+        ).fetchone()["n"])
+        if members_count >= CLAN_MAX_MEMBERS:
+            connection.rollback()
+            return CommunityActionResult(False, "Клан заполнен", f"В клане уже {CLAN_MAX_MEMBERS} игроков."), None
+
+        connection.execute(
+            "INSERT INTO clan_members (clan_id, user_id, role) VALUES (?, ?, 'member')",
+            (int(actor["clan_id"]), applicant_id),
+        )
+        connection.execute(
+            "UPDATE clan_join_requests SET status = 'approved', resolved_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (request_id,),
+        )
+        # прочие ожидающие заявки этого игрока отклоняем
+        connection.execute(
+            "UPDATE clan_join_requests SET status = 'rejected', resolved_at = CURRENT_TIMESTAMP WHERE user_id = ? AND status = 'pending'",
+            (applicant_id,),
+        )
+        connection.commit()
+        return CommunityActionResult(True, "Игрок принят", "Он получит уведомление о вступлении."), applicant_tg
 
 
 async def leave_clan(user_id: int) -> CommunityActionResult:
@@ -1145,6 +1429,91 @@ async def leave_clan(user_id: int) -> CommunityActionResult:
             connection.execute("DELETE FROM clan_members WHERE user_id = ?", (user_id,))
         connection.commit()
     return CommunityActionResult(True, "Клан покинут", "Теперь можно вступить в другую команду.")
+
+
+def get_clan_member_row(connection, user_id: int):
+    return connection.execute(
+        "SELECT clan_id, role FROM clan_members WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+
+
+async def kick_clan_member(actor_user_id: int, target_user_id: int) -> CommunityActionResult:
+    if actor_user_id == target_user_id:
+        return CommunityActionResult(False, "Действие недоступно", "Себя выгнать нельзя — используй выход из клана.")
+
+    with get_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        actor = get_clan_member_row(connection, actor_user_id)
+        target = get_clan_member_row(connection, target_user_id)
+
+        if actor is None or actor["role"] not in ("leader", "officer"):
+            connection.rollback()
+            return CommunityActionResult(False, "Нет прав", "Исключать игроков могут только президент и вице-президент.")
+        if target is None or int(target["clan_id"]) != int(actor["clan_id"]):
+            connection.rollback()
+            return CommunityActionResult(False, "Игрок не найден", "Этот игрок уже не состоит в вашем клане.")
+        if target["role"] == "leader":
+            connection.rollback()
+            return CommunityActionResult(False, "Нет прав", "Президента клана исключить нельзя.")
+        if actor["role"] == "officer" and target["role"] == "officer":
+            connection.rollback()
+            return CommunityActionResult(False, "Нет прав", "Вице-президент может исключать только обычных участников.")
+
+        connection.execute("DELETE FROM clan_members WHERE user_id = ?", (target_user_id,))
+        connection.commit()
+
+    return CommunityActionResult(True, "Игрок исключён", "Место в клане освободилось.")
+
+
+async def toggle_clan_vice(actor_user_id: int, target_user_id: int) -> CommunityActionResult:
+    if actor_user_id == target_user_id:
+        return CommunityActionResult(False, "Действие недоступно", "Президент не может назначить вице-президентом себя.")
+
+    with get_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        actor = get_clan_member_row(connection, actor_user_id)
+        target = get_clan_member_row(connection, target_user_id)
+
+        if actor is None or actor["role"] != "leader":
+            connection.rollback()
+            return CommunityActionResult(False, "Нет прав", "Назначать вице-президента может только президент клана.")
+        if target is None or int(target["clan_id"]) != int(actor["clan_id"]):
+            connection.rollback()
+            return CommunityActionResult(False, "Игрок не найден", "Этот игрок уже не состоит в вашем клане.")
+
+        if target["role"] == "officer":
+            connection.execute(
+                "UPDATE clan_members SET role = 'member' WHERE user_id = ?",
+                (target_user_id,),
+            )
+            connection.commit()
+            return CommunityActionResult(True, "Роль снята", "Игрок снова обычный участник клана.")
+
+        # Вице-президент в клане один: прежнего понижаем до участника.
+        connection.execute(
+            "UPDATE clan_members SET role = 'member' WHERE clan_id = ? AND role = 'officer'",
+            (actor["clan_id"],),
+        )
+        connection.execute(
+            "UPDATE clan_members SET role = 'officer' WHERE user_id = ?",
+            (target_user_id,),
+        )
+        connection.commit()
+
+    return CommunityActionResult(True, "Вице-президент назначен", "Теперь у клана есть правая рука президента.")
+
+
+async def get_clan_member_row_public(user_id: int):
+    with get_connection() as connection:
+        row = connection.execute("SELECT nickname FROM users WHERE id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+async def get_clan_member_telegram_id(user_id: int) -> int | None:
+    with get_connection() as connection:
+        row = connection.execute("SELECT telegram_id FROM users WHERE id = ?", (user_id,)).fetchone()
+    return int(row["telegram_id"]) if row else None
 
 
 async def toggle_clan_active(clan_id: int) -> CommunityActionResult:

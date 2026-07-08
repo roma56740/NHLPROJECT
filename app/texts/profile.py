@@ -143,8 +143,9 @@ def format_hockey_pass_title(value: str | None) -> str:
 
 
 def build_profile_text(profile: PlayerProfile) -> str:
+    badge = " ✅" if getattr(profile, "is_creator", False) else ""
     return PROFILE_TEXT.format(
-        nickname=format_safe(profile.nickname),
+        nickname=format_safe(profile.nickname) + badge,
         league=format_safe(profile.league),
         rating_points=profile.rating_points,
         matches_played=profile.matches_played,
@@ -175,7 +176,10 @@ def build_profile_settings_text(profile: PlayerProfile) -> str:
     )
 
 
-def validate_text_value(value: str, min_length: int, max_length: int) -> str | None:
+def validate_text_value(value: str | None, min_length: int, max_length: int) -> str | None:
+    if value is None:
+        return None
+
     clean_value = clean_user_text(value)
 
     if len(clean_value) < min_length:

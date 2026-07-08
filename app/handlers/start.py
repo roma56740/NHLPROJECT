@@ -1,20 +1,21 @@
+from html import escape
 from pathlib import Path
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import FSInputFile, Message
 
 from app.keyboards.reply import build_admin_main_keyboard, build_user_main_keyboard
 from app.services.currencies import format_currency_amount
-from app.services.packs import ensure_starter_pack_for_user
 from app.services.users import PlayerProfile, register_or_update_player
 from app.utils.users import is_admin
 
 
 router = Router()
 
-LOGO_PATH = Path("Logo.png")
+LOGO_PATH = Path("logo.png")
 
 
 USER_START_TEXT = """
@@ -77,13 +78,13 @@ def build_balances_text(profile: PlayerProfile) -> str:
 
 
 def build_start_text(profile: PlayerProfile, is_user_admin: bool) -> str:
-    status_line = "✅ Профиль создан. Добро пожаловать на лёд!" if profile.is_new else "✅ Профиль готов. Рады видеть снова!"
+    status_line = "✅ Профиль создан. Добро пожаловать на лёд!" if profile.is_new else "✅ Главное меню открыто. Прогресс сохранён!"
     template = ADMIN_START_TEXT if is_user_admin else USER_START_TEXT
 
     return template.format(
         status_line=status_line,
-        nickname=profile.nickname,
-        league=profile.league,
+        nickname=escape(profile.nickname, quote=False),
+        league=escape(profile.league, quote=False),
         rating_points=profile.rating_points,
         hockey_pass_level=profile.hockey_pass_level,
         balances=build_balances_text(profile),
@@ -91,12 +92,13 @@ def build_start_text(profile: PlayerProfile, is_user_admin: bool) -> str:
 
 
 @router.message(CommandStart())
-async def start_command(message: Message) -> None:
+async def start_command(message: Message, state: FSMContext) -> None:
     if message.from_user is None:
         return
 
+    await state.clear()
+
     profile = await register_or_update_player(message.from_user)
-    await ensure_starter_pack_for_user(profile.id)
     is_user_admin = is_admin(message.from_user.id)
 
     text = build_start_text(profile, is_user_admin)

@@ -31,6 +31,7 @@ from app.services.admin_cards import (
     update_card_collection,
     update_card_image_path,
     update_card_overall,
+    update_card_salary,
     update_card_position,
     update_card_rarity,
     update_card_text_field,
@@ -46,6 +47,7 @@ from app.texts.admin_cards import (
     ADMIN_CARDS_BAD_TEXT_TEXT,
     ADMIN_CARDS_CANCEL_TEXT,
     ADMIN_CARDS_COLLECTION_TEXT,
+    ADMIN_CARDS_SALARY_TEXT,
     ADMIN_CARDS_COUNTRY_TEXT,
     ADMIN_CARDS_EMPTY_TEXT,
     ADMIN_CARDS_IMAGE_TEXT,
@@ -253,6 +255,7 @@ async def get_draft_from_state(state: FSMContext) -> CardDraft | None:
         "overall",
         "team",
         "country",
+        "salary",
         "collection_name",
         "rarity",
     ]
@@ -267,6 +270,7 @@ async def get_draft_from_state(state: FSMContext) -> CardDraft | None:
         overall=int(data["overall"]),
         team=str(data["team"]),
         country=str(data["country"]),
+        salary=int(data.get("salary", 0)),
         collection_name=str(data["collection_name"]),
         rarity=str(data["rarity"]),
     )
@@ -475,6 +479,34 @@ async def admin_cards_country(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(country=country)
+    await state.set_state(AdminCardsStates.waiting_for_salary)
+    await edit_state_message(
+        message,
+        state,
+        ADMIN_CARDS_SALARY_TEXT,
+        reply_markup=build_admin_cards_cancel_keyboard(),
+    )
+
+
+@router.message(AdminCardsStates.waiting_for_salary)
+async def admin_cards_salary(message: Message, state: FSMContext) -> None:
+    if not await answer_admin_only(message):
+        return
+
+    await safe_delete_message(message)
+    from app.services.salary import parse_salary
+
+    salary = parse_salary(message.text or "")
+    if salary is None:
+        await edit_state_message(
+            message,
+            state,
+            "💵 Введи зарплату в миллионах, например 5.5. Число от 0 до 200.",
+            reply_markup=build_admin_cards_cancel_keyboard(),
+        )
+        return
+
+    await state.update_data(salary=salary)
     await state.set_state(AdminCardsStates.waiting_for_collection)
     await edit_state_message(
         message,
@@ -727,6 +759,9 @@ async def admin_cards_edit_value(message: Message, state: FSMContext) -> None:
     if field == "overall":
         card = await update_card_overall(card_id, value)
         error_text = ADMIN_CARDS_BAD_OVERALL_TEXT
+    elif field == "salary":
+        card = await update_card_salary(card_id, value)
+        error_text = "💵 Введи зарплату в миллионах, например 5.5 (число от 0 до 200)."
     elif field == "collection":
         card = await update_card_collection(card_id, value)
         error_text = ADMIN_CARDS_BAD_TEXT_TEXT

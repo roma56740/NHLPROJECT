@@ -8,11 +8,53 @@ from app.services.hockey_pass import (
     HockeyPassRewardItem,
     TRACK_TITLES,
     UserHockeyPassInfo,
+    UserHockeyPassMap,
     UserRewardsPage,
 )
 
 
 HPASS_PER_PAGE = 5
+
+
+def _short_button_text(value: str, limit: int = 34) -> str:
+    clean = " ".join((value or "Награда").split())
+    if len(clean) <= limit:
+        return clean
+    return f"{clean[:limit - 1]}…"
+
+
+def build_user_hockey_pass_map_keyboard(pass_map: UserHockeyPassMap) -> InlineKeyboardMarkup:
+    info = pass_map.info
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for level in pass_map.levels:
+        for reward in [*level.free_rewards, *level.premium_rewards]:
+            if reward.available:
+                track = "👑" if reward.track == "premium" else "🎟"
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text=f"🎁 Забрать ур. {reward.level} {track} · {_short_button_text(reward.title)}",
+                            callback_data=f"hpass:level_claim:{reward.id}:{pass_map.page}",
+                        )
+                    ]
+                )
+
+    nav: list[InlineKeyboardButton] = []
+    if pass_map.page > 1:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"hpass:levels:{pass_map.page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"{pass_map.page}/{pass_map.pages_count}", callback_data="hpass:page_info"))
+    if pass_map.page < pass_map.pages_count:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"hpass:levels:{pass_map.page + 1}"))
+    if nav:
+        rows.append(nav)
+
+    if info.pass_id is not None and not info.premium_unlocked and not info.is_finished:
+        rows.append([InlineKeyboardButton(text="👑 Купить Premium", callback_data="hpass:buy_ask")])
+
+    rows.append([InlineKeyboardButton(text="🎁 Все награды", callback_data="hpass:rewards:1")])
+    rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data=f"hpass:levels:{pass_map.page}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def build_user_hockey_pass_keyboard(info: UserHockeyPassInfo) -> InlineKeyboardMarkup:

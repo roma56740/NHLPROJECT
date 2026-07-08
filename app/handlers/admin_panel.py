@@ -94,7 +94,7 @@ async def send_uploads_archive(message: Message) -> None:
     try:
         await message.answer_document(
             document=FSInputFile(archive_path),
-            caption="🖼 Архив загруженных изображений готов.",
+            caption="🖼 Архив готов. Карты разложены по коллекциям, позициям и OVR.",
         )
     finally:
         cleanup_export_file(archive_path)

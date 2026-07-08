@@ -49,6 +49,7 @@ class AdminUserProfile:
     team_logo_path: str | None
     privacy_public_cards: bool
     is_banned: bool
+    trade_blocked: bool
     cards_count: int
     packs_count: int
     balances: list[CurrencyBalance]
@@ -186,7 +187,8 @@ async def get_admin_user_profile(user_id: int) -> AdminUserProfile | None:
                 team_country,
                 team_logo_path,
                 privacy_public_cards,
-                is_banned
+                is_banned,
+                trade_blocked
             FROM users
             WHERE id = ?
             """,
@@ -228,6 +230,7 @@ async def get_admin_user_profile(user_id: int) -> AdminUserProfile | None:
         team_logo_path=row["team_logo_path"],
         privacy_public_cards=bool(row["privacy_public_cards"]),
         is_banned=bool(row["is_banned"]),
+        trade_blocked=bool(row["trade_blocked"]),
         cards_count=cards_count,
         packs_count=packs_count,
         balances=balances,
@@ -349,6 +352,30 @@ async def toggle_user_premium_pass(user_id: int) -> AdminUserProfile | None:
             UPDATE users
             SET
                 premium_pass = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (new_value, user_id),
+        )
+        connection.commit()
+
+    return await get_admin_user_profile(user_id)
+
+
+async def toggle_user_trade_block(user_id: int) -> AdminUserProfile | None:
+    profile = await get_admin_user_profile(user_id)
+
+    if profile is None:
+        return None
+
+    new_value = 0 if profile.trade_blocked else 1
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE users
+            SET
+                trade_blocked = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,

@@ -1,3 +1,5 @@
+from html import escape
+
 from app.services.community import (
     ClanProfile,
     ClansPage,
@@ -32,6 +34,20 @@ TRADE_MAIN_TEXT = """
 • карточки на карточки;
 • карточки на валюту;
 • несколько карточек на одну или несколько.
+""".strip()
+
+TRADE_DIRECT_SEARCH_TEXT = """
+<b>🎯 Личный обмен</b>
+
+Найди игрока по никнейму, username или ID.
+
+Личный обмен можно отправить только игроку с открытой коллекцией карточек.
+""".strip()
+
+TRADE_DIRECT_PLAYERS_TEXT = """
+<b>🎯 Выбор игрока</b>
+
+Выбери игрока для личного предложения.
 """.strip()
 
 TRADE_CREATE_TEXT = """
@@ -117,7 +133,7 @@ def build_players_page_text(page: CommunityPlayersPage) -> str:
     for index, player in enumerate(page.players, start=(page.page - 1) * 5 + 1):
         privacy = "🌍" if player.privacy_public_cards else "🔒"
         lines.append(
-            f"{index}. {privacy} <b>{player.nickname}</b> • {player.league} • {format_number(player.rating_points)} очков"
+            f"{index}. {privacy} <b>{escape(player.nickname, quote=False)}</b> • {player.league} • {format_number(player.rating_points)} очков"
         )
         lines.append(f"   ✅ {player.wins} • ❌ {player.losses} • 🏟 {player.matches_played}")
 
@@ -127,12 +143,12 @@ def build_players_page_text(page: CommunityPlayersPage) -> str:
 
 
 def build_public_player_profile_text(profile: PublicPlayerProfile) -> str:
-    username = f"@{profile.username}" if profile.username else "не указан"
+    username = f"@{escape(profile.username, quote=False)}" if profile.username else "не указан"
     winrate = round(profile.wins / profile.matches_played * 100) if profile.matches_played else 0
     cards_status = "открыта" if profile.privacy_public_cards else "скрыта"
 
     lines = [
-        f"<b>👤 {profile.nickname}</b>",
+        f"<b>👤 {escape(profile.nickname, quote=False)}</b>",
         f"🔗 Username: <b>{username}</b>",
         "",
         f"🏆 Лига: <b>{profile.league}</b>",
@@ -219,7 +235,8 @@ def build_trade_offers_page_text(page: TradeOffersPage) -> str:
                 "accepted": "✅ принято",
                 "cancelled": "🚫 отменено",
             }.get(offer.status, offer.status)
-            lines.append(f"#{offer.id} • <b>{offer.creator_nickname}</b> • отдаёт {offer.offered_count} карт. → {wanted} • {status}")
+            target = f" → 🎯 {escape(offer.target_nickname, quote=False)}" if offer.target_nickname else ""
+            lines.append(f"#{offer.id} • <b>{escape(offer.creator_nickname, quote=False)}</b>{target} • отдаёт {offer.offered_count} карт. → {wanted} • {status}")
     lines.append("")
     lines.append(f"Страница {page.page}/{page.pages_count}")
     return "\n".join(lines)
@@ -231,9 +248,11 @@ def build_trade_offer_profile_text(offer: TradeOfferProfile) -> str:
         "accepted": "✅ принято",
         "cancelled": "🚫 отменено",
     }.get(offer.status, offer.status)
+    target_line = f"🎯 Получатель: <b>{escape(offer.target_nickname, quote=False)}</b>" if offer.target_nickname else "🌍 Тип: <b>рынок обменов</b>"
     lines = [
         f"<b>🔁 Обмен #{offer.id}</b>",
-        f"👤 Автор: <b>{offer.creator_nickname}</b>",
+        f"👤 Автор: <b>{escape(offer.creator_nickname, quote=False)}</b>",
+        target_line,
         f"📌 Статус: <b>{status}</b>",
         "",
         "<b>Отдаёт</b>",
@@ -251,7 +270,7 @@ def build_trade_offer_profile_text(offer: TradeOfferProfile) -> str:
 
     if offer.accepted_by_nickname:
         lines.append("")
-        lines.append(f"🤝 Принял: <b>{offer.accepted_by_nickname}</b>")
+        lines.append(f"🤝 Принял: <b>{escape(offer.accepted_by_nickname, quote=False)}</b>")
 
     return "\n".join(lines)
 
@@ -264,9 +283,9 @@ def build_clans_page_text(page: ClansPage, admin: bool = False) -> str:
     else:
         for clan in page.clans:
             status = "🟢" if clan.active else "🔴"
-            lines.append(f"{status} <b>{clan.name}</b> • 👥 {clan.members_count} • ⭐ {format_number(clan.rating_points)}")
+            lines.append(f"{status} <b>{escape(clan.name, quote=False)}</b> • 👥 {clan.members_count} • ⭐ {format_number(clan.rating_points)}")
             if clan.description:
-                lines.append(f"   {clan.description[:70]}")
+                lines.append(f"   {escape(clan.description[:70], quote=False)}")
     lines.append("")
     lines.append(f"Страница {page.page}/{page.pages_count}")
     return "\n".join(lines)
@@ -274,28 +293,62 @@ def build_clans_page_text(page: ClansPage, admin: bool = False) -> str:
 
 def build_clan_profile_text(profile: ClanProfile, admin: bool = False) -> str:
     status = "открыт" if profile.active else "закрыт"
-    role_names = {"leader": "👑 лидер", "officer": "🛡 офицер", "member": "🏒 участник"}
+    role_names = {"leader": "👑 президент", "officer": "🥈 вице-президент", "member": "🏒 участник"}
     lines = [
-        f"<b>🏰 {profile.name}</b>",
+        f"<b>🏰 {escape(profile.name, quote=False)}</b>",
         f"📌 Статус: <b>{status}</b>",
-        f"👥 Участники: <b>{profile.members_count}</b>",
+        f"👥 Участники: <b>{profile.members_count}/10</b>",
         f"⭐ Рейтинг: <b>{format_number(profile.rating_points)}</b>",
         f"✅ Победы: <b>{profile.wins}</b>",
     ]
     if profile.description:
         lines.extend(["", profile.description])
     if profile.created_by_nickname:
-        lines.append(f"\n👑 Основатель: <b>{profile.created_by_nickname}</b>")
+        lines.append(f"\n👑 Президент: <b>{escape(profile.created_by_nickname, quote=False)}</b>")
     if profile.viewer_role and not admin:
         lines.append(f"🎖 Твоя роль: <b>{role_names.get(profile.viewer_role, profile.viewer_role)}</b>")
 
     if profile.members:
         lines.append("\n<b>Состав клана</b>")
         for member in profile.members:
-            lines.append(f"{role_names.get(member.role, member.role)} • <b>{member.nickname}</b>")
+            lines.append(f"{role_names.get(member.role, member.role)} • <b>{escape(member.nickname, quote=False)}</b>")
 
     return "\n".join(lines)
 
 
 def build_action_result_text(title: str, description: str) -> str:
     return f"<b>{title}</b>\n\n{description}"
+
+
+CLAN_MANAGE_TEXT = """
+<b>🏰 Управление составом</b>
+
+Выбери игрока, чтобы назначить вице-президента или исключить из клана.
+
+👑 Президент — полный контроль над кланом.
+🥈 Вице-президент — может исключать обычных участников. В клане только один вице.
+""".strip()
+
+
+def build_clan_member_manage_text(nickname: str, role: str) -> str:
+    role_names = {"leader": "👑 президент", "officer": "🥈 вице-президент", "member": "🏒 участник"}
+    return f"""
+<b>🏒 Игрок клана</b>
+
+👤 <b>{escape(nickname, quote=False)}</b>
+🎖 Роль: <b>{role_names.get(role, role)}</b>
+
+Выбери действие ниже.
+""".strip()
+
+
+def build_clan_requests_text(requests) -> str:
+    if not requests:
+        return "<b>📥 Заявки в клан</b>\n\nНовых заявок нет."
+    lines = ["<b>📥 Заявки в клан</b>", "", f"Ожидают решения: <b>{len(requests)}</b>", ""]
+    for req in requests:
+        lines.append(f"👤 <b>{escape(req['nickname'], quote=False)}</b>")
+    lines.append("")
+    lines.append("✅ — принять, ❌ — отклонить.")
+    return "\n".join(lines)
+

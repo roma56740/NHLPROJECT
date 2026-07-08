@@ -4,6 +4,7 @@ from aiogram.fsm.state import State, StatesGroup
 class CommunityStates(StatesGroup):
     search_players = State()
     trade_search_offer_card = State()
+    trade_direct_player_search = State()
     trade_currency_amount = State()
     trade_search_wanted_card = State()
     clan_create_name = State()

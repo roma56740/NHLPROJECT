@@ -13,6 +13,7 @@ def build_profile_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Обновить", callback_data="profile:refresh")],
+            [InlineKeyboardButton(text="🎫 Ввести промокод", callback_data="promo:enter")],
             [InlineKeyboardButton(text="⚙️ Настройки профиля", callback_data="profile:settings")],
             [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu:main")],
         ]

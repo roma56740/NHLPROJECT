@@ -1,5 +1,6 @@
 from html import escape
 
+from app.services.salary import format_salary
 from app.services.lineup import (
     LINEUP_SLOT_ORDER,
     LineupCardsPage,
@@ -60,6 +61,12 @@ def build_lineup_text(overview: LineupOverview) -> str:
             f"{slot.icon} <b>{safe(slot.title)}</b>: {safe(card.name)} · {card.overall} OVR · {safe(card.rarity)}"
         )
 
+    if overview.salary_cap:
+        over = overview.salary_total > overview.salary_cap
+        mark = " ⚠️ превышен" if over else ""
+        salary_line = f"{format_salary(overview.salary_total)} / {format_salary(overview.salary_cap)}{mark}"
+    else:
+        salary_line = format_salary(overview.salary_total)
     average_line = "—" if overview.average_overall is None else str(overview.average_overall)
     final_line = "—" if overview.final_overall is None else str(overview.final_overall)
     chemistry_line = f"+{overview.chemistry_bonus}" if overview.chemistry_bonus > 0 else "—"
@@ -81,6 +88,7 @@ def build_lineup_text(overview: LineupOverview) -> str:
 Средний OVR: <b>{average_line}</b>
 🧪 Химия: <b>{chemistry_line}</b>
 ⭐ Итоговый OVR: <b>{final_line}</b>
+💵 Зарплата: <b>{salary_line}</b>
 
 {chr(10).join(lines)}
 

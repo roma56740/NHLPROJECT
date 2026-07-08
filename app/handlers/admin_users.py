@@ -24,9 +24,17 @@ from app.services.admin_users import (
     get_users_page,
     toggle_user_ban,
     toggle_user_premium_pass,
+    toggle_user_trade_block,
     update_user_league,
 )
-from app.services.packs import get_pack_choice_page, give_pack_to_user
+from app.services.admin_notifications import (
+    build_card_reward_notification,
+    build_currency_reward_notification,
+    build_pack_reward_notification,
+    build_premium_reward_notification,
+    send_admin_reward_notification,
+)
+from app.services.packs import get_pack_choice_page, get_pack_info, give_pack_to_user
 from app.services.user_cards import get_card_choice_page, give_card_to_user
 from app.states.admin_users import AdminUsersStates
 from app.texts.admin_users import (
@@ -119,6 +127,7 @@ async def show_user_profile(callback: CallbackQuery, user_id: int, page: int) ->
             page=page,
             premium_pass=profile.hockey_pass_premium_unlocked,
             is_banned=profile.is_banned,
+            trade_blocked=profile.trade_blocked,
         ),
     )
 
@@ -464,7 +473,13 @@ async def admin_users_give_card_do(callback: CallbackQuery, state: FSMContext) -
             page=user_page,
             premium_pass=profile.hockey_pass_premium_unlocked,
             is_banned=profile.is_banned,
+            trade_blocked=profile.trade_blocked,
         ),
+    )
+    await send_admin_reward_notification(
+        callback.bot,
+        profile.telegram_id,
+        build_card_reward_notification(player_card),
     )
     await callback.answer("Карточка выдана")
 
@@ -606,6 +621,7 @@ async def admin_users_give_pack_do(callback: CallbackQuery, state: FSMContext) -
         await callback.answer("Пак не найден", show_alert=True)
         return
 
+    pack = await get_pack_info(pack_id)
     profile = await get_admin_user_profile(user_id)
 
     if profile is None:
@@ -620,8 +636,15 @@ async def admin_users_give_pack_do(callback: CallbackQuery, state: FSMContext) -
             page=user_page,
             premium_pass=profile.hockey_pass_premium_unlocked,
             is_banned=profile.is_banned,
+            trade_blocked=profile.trade_blocked,
         ),
     )
+    if pack is not None:
+        await send_admin_reward_notification(
+            callback.bot,
+            profile.telegram_id,
+            build_pack_reward_notification(pack.name, quantity=1),
+        )
     await callback.answer("Пак выдан")
 
 
@@ -722,6 +745,7 @@ async def admin_users_currency_amount(message: Message, state: FSMContext) -> No
                 page=page,
                 premium_pass=profile.hockey_pass_premium_unlocked,
                 is_banned=profile.is_banned,
+                trade_blocked=profile.trade_blocked,
             ),
         )
     else:
@@ -732,9 +756,16 @@ async def admin_users_currency_amount(message: Message, state: FSMContext) -> No
                 page=page,
                 premium_pass=profile.hockey_pass_premium_unlocked,
                 is_banned=profile.is_banned,
+                trade_blocked=profile.trade_blocked,
             ),
         )
 
+    if amount != 0:
+        await send_admin_reward_notification(
+            message.bot,
+            profile.telegram_id,
+            build_currency_reward_notification(get_currency_title(currency_code), amount),
+        )
     await state.clear()
 
 
@@ -785,6 +816,7 @@ async def admin_users_set_league(callback: CallbackQuery, state: FSMContext) -> 
             page=page,
             premium_pass=profile.hockey_pass_premium_unlocked,
             is_banned=profile.is_banned,
+            trade_blocked=profile.trade_blocked,
         ),
     )
     await callback.answer("Лига обновлена")
@@ -799,6 +831,8 @@ async def admin_users_premium(callback: CallbackQuery, state: FSMContext) -> Non
     parts = callback.data.split(":") if callback.data else []
     user_id = int(parts[2])
     page = int(parts[3])
+    previous_profile = await get_admin_user_profile(user_id)
+    was_premium = bool(previous_profile and previous_profile.hockey_pass_premium_unlocked)
     profile = await toggle_user_premium_pass(user_id)
 
     if profile is None:
@@ -813,9 +847,45 @@ async def admin_users_premium(callback: CallbackQuery, state: FSMContext) -> Non
             page=page,
             premium_pass=profile.hockey_pass_premium_unlocked,
             is_banned=profile.is_banned,
+            trade_blocked=profile.trade_blocked,
         ),
     )
+    if profile.hockey_pass_premium_unlocked and not was_premium:
+        await send_admin_reward_notification(
+            callback.bot,
+            profile.telegram_id,
+            build_premium_reward_notification(profile.hockey_pass_title),
+        )
     await callback.answer("Premium Pass обновлён")
+
+
+@router.callback_query(F.data.startswith("admin_users:trade_block:"))
+async def admin_users_trade_block(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+
+    await state.clear()
+    parts = callback.data.split(":") if callback.data else []
+    user_id = int(parts[2])
+    page = int(parts[3])
+    profile = await toggle_user_trade_block(user_id)
+
+    if profile is None:
+        await callback.answer("Игрок не найден", show_alert=True)
+        return
+
+    await edit_admin_message(
+        callback,
+        build_admin_user_profile_text(profile),
+        reply_markup=build_admin_user_profile_keyboard(
+            user_id=profile.id,
+            page=page,
+            premium_pass=profile.hockey_pass_premium_unlocked,
+            is_banned=profile.is_banned,
+            trade_blocked=profile.trade_blocked,
+        ),
+    )
+    await callback.answer("Статус обменов обновлён")
 
 
 @router.callback_query(F.data.startswith("admin_users:ban:"))
@@ -841,6 +911,7 @@ async def admin_users_ban(callback: CallbackQuery, state: FSMContext) -> None:
             page=page,
             premium_pass=profile.hockey_pass_premium_unlocked,
             is_banned=profile.is_banned,
+            trade_blocked=profile.trade_blocked,
         ),
     )
     await callback.answer("Статус игрока обновлён")

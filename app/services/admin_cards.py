@@ -46,6 +46,7 @@ class CardProfile:
     collection_name: str
     rarity: str
     image_path: str
+    salary: int
     active: bool
 
 
@@ -68,6 +69,7 @@ class CardDraft:
     country: str
     collection_name: str
     rarity: str
+    salary: int = 0
 
 
 def clean_text(value: str) -> str:
@@ -185,7 +187,7 @@ async def get_cards_page(page: int = 1, per_page: int = 5, search: str | None = 
             f"""
             SELECT COUNT(*) AS total_count
             FROM cards
-            JOIN collections ON collections.id = cards.collection_id
+            LEFT JOIN collections ON collections.id = cards.collection_id
             {where_sql}
             """,
             params,
@@ -206,9 +208,9 @@ async def get_cards_page(page: int = 1, per_page: int = 5, search: str | None = 
                 cards.country,
                 cards.rarity,
                 cards.active,
-                collections.name AS collection_name
+                COALESCE(collections.name, 'Без коллекции') AS collection_name
             FROM cards
-            JOIN collections ON collections.id = cards.collection_id
+            LEFT JOIN collections ON collections.id = cards.collection_id
             {where_sql}
             ORDER BY cards.id DESC
             LIMIT ? OFFSET ?
@@ -256,11 +258,12 @@ async def get_card_profile(card_id: int) -> CardProfile | None:
                 cards.collection_id,
                 cards.rarity,
                 cards.image_path,
+                cards.salary,
                 cards.active,
-                collections.code AS collection_code,
-                collections.name AS collection_name
+                COALESCE(collections.code, '') AS collection_code,
+                COALESCE(collections.name, 'Без коллекции') AS collection_name
             FROM cards
-            JOIN collections ON collections.id = cards.collection_id
+            LEFT JOIN collections ON collections.id = cards.collection_id
             WHERE cards.id = ?
             """,
             (card_id,),
@@ -283,6 +286,7 @@ async def get_card_profile(card_id: int) -> CardProfile | None:
         collection_name=row["collection_name"],
         rarity=row["rarity"],
         image_path=row["image_path"],
+        salary=int(row["salary"] or 0),
         active=bool(row["active"]),
     )
 
@@ -333,9 +337,10 @@ async def create_card(draft: CardDraft) -> CardProfile:
                 collection_id,
                 rarity,
                 image_path,
+                salary,
                 active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 draft.name,
@@ -347,6 +352,7 @@ async def create_card(draft: CardDraft) -> CardProfile:
                 collection_id,
                 draft.rarity,
                 draft.image_path,
+                draft.salary,
             ),
         )
         card_id = int(cursor.lastrowid)
@@ -441,6 +447,23 @@ async def update_card_overall(card_id: int, value: str) -> CardProfile | None:
             WHERE id = ?
             """,
             (overall, card_id),
+        )
+        connection.commit()
+
+    return await get_card_profile(card_id)
+
+
+async def update_card_salary(card_id: int, value: str) -> CardProfile | None:
+    from app.services.salary import parse_salary
+
+    salary = parse_salary(value)
+    if salary is None:
+        return None
+
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE cards SET salary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (salary, card_id),
         )
         connection.commit()
 

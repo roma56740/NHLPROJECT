@@ -12,6 +12,8 @@ from app.services.lineup import LineupCard, get_lineup_overview
 from app.services.events import apply_match_event_progress
 from app.services.quests import apply_match_quest_progress
 from app.services.settings import get_int_setting
+from app.services.clan_wars import apply_clan_war_win
+from app.services.salary import format_salary
 from app.services.users import PlayerProfile, get_player_profile_by_telegram_id
 
 
@@ -186,6 +188,22 @@ def clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+async def compute_bot_opponent_ovr(user_ovr: int) -> int:
+    """Бот немного слабее игрока; для новичков и слабых составов фора больше.
+
+    Админ может дополнительно ослабить ботов настройкой bot_handicap_extra.
+    """
+    if user_ovr <= 75:
+        handicap = random.randint(4, 8)
+    elif user_ovr <= 85:
+        handicap = random.randint(2, 6)
+    else:
+        handicap = random.randint(0, 4)
+
+    extra = await get_int_setting("bot_handicap_extra", 0, minimum=0, maximum=20)
+    return clamp(user_ovr - handicap - extra, 45, 99)
+
+
 def weighted_success(user_ovr: int, opponent_ovr: int) -> bool:
     chance = clamp(50 + (user_ovr - opponent_ovr) * 2, 35, 65)
     return random.randint(1, 100) <= chance
@@ -278,6 +296,36 @@ def simulate_period(
     )
     events = build_period_events(title, user_goals, opponent_goals, lineup_cards, opponent_name)
     return summary, events
+
+
+
+def mirror_events_for_second_player(
+    events: list[MatchEventInfo],
+    *,
+    first_player_name: str,
+    second_player_name: str,
+) -> list[MatchEventInfo]:
+    mirrored: list[MatchEventInfo] = []
+
+    for event in events:
+        description = event.description
+
+        if event.event_type == "GOAL":
+            if description.startswith(f"{second_player_name} "):
+                description = description.replace(f"{second_player_name} отвечает голом", f"Гол забивает {second_player_name}", 1)
+            else:
+                description = f"{first_player_name} отвечает голом"
+
+        mirrored.append(
+            MatchEventInfo(
+                period_title=event.period_title,
+                time_text=event.time_text,
+                event_type=event.event_type,
+                description=description,
+            )
+        )
+
+    return mirrored
 
 
 def calculate_rating_delta(user_ovr: int, opponent_ovr: int, is_win: bool) -> int:
@@ -521,6 +569,13 @@ async def enter_matchmaking(telegram_id: int, chat_id: int, message_id: int) -> 
     if not overview.is_complete or overview.average_overall is None:
         return MatchmakingResult("not_ready", "Для матча нужно заполнить все 6 слотов состава.")
 
+    if overview.salary_cap and overview.salary_total > overview.salary_cap:
+        return MatchmakingResult(
+            "not_ready",
+            f"Потолок зарплат превышен. Лимит лиги: {format_salary(overview.salary_cap)}, "
+            f"ваш состав: {format_salary(overview.salary_total)}. Замени дорогую карту.",
+        )
+
     user_ovr = overview.final_overall or overview.average_overall
 
     with get_connection() as connection:
@@ -699,7 +754,8 @@ async def save_match_result(
         delta=rating_delta,
     )
     win_coins_reward = await get_int_setting("win_coins_reward", WIN_COINS_REWARD, minimum=0, maximum=1000000)
-    coins_reward = win_coins_reward if is_win else 0
+    loss_coins_reward = await get_int_setting("loss_coins_reward", 0, minimum=0, maximum=1000000)
+    coins_reward = win_coins_reward if is_win else loss_coins_reward
 
     with get_connection() as connection:
         cursor = connection.execute(
@@ -820,6 +876,9 @@ async def save_match_result(
         goals_allowed=opponent_score,
     )
 
+    if is_win:
+        await apply_clan_war_win(profile.id)
+
     return MatchPlayResult(
         success=True,
         message="Матч завершён.",
@@ -855,9 +914,16 @@ async def play_quick_match(telegram_id: int) -> MatchPlayResult:
     if not overview.is_complete or overview.average_overall is None:
         return MatchPlayResult(False, "Для матча нужно заполнить все 6 слотов состава.")
 
+    if overview.salary_cap and overview.salary_total > overview.salary_cap:
+        return MatchPlayResult(
+            False,
+            f"Потолок зарплат превышен. Лимит лиги: {format_salary(overview.salary_cap)}, "
+            f"ваш состав: {format_salary(overview.salary_total)}. Замени дорогую карту.",
+        )
+
     lineup_cards = [card for card in overview.slots.values() if card is not None]
     user_ovr = overview.final_overall or overview.average_overall
-    opponent_ovr = clamp(user_ovr + random.randint(-4, 4), 55, 99)
+    opponent_ovr = await compute_bot_opponent_ovr(user_ovr)
     opponent_name = random.choice(BOT_NAMES)
     user_score, opponent_score, is_overtime, is_shootout, periods, events = build_simulation(
         user_ovr=user_ovr,
@@ -916,6 +982,11 @@ async def play_player_match(
     )
     first_mvp = choose_scorer(first_cards, "Игрок матча") if first_score > second_score else f"Лидер {second_profile.nickname}"
     second_mvp = f"Лидер {second_profile.nickname}" if first_score <= second_score else choose_scorer(first_cards, "Игрок матча")
+    second_events = mirror_events_for_second_player(
+        events,
+        first_player_name=first_profile.nickname,
+        second_player_name=second_profile.nickname,
+    )
 
     first_result = await save_match_result(
         profile=first_profile,
@@ -944,7 +1015,7 @@ async def play_player_match(
         is_overtime=is_overtime,
         is_shootout=is_shootout,
         periods=mirror_periods(periods),
-        events=events,
+        events=second_events,
         mvp_title=second_mvp,
     )
 

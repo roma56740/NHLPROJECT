@@ -3,6 +3,7 @@ from html import escape
 from app.services.matches import (
     EVENT_ICONS,
     MatchDetails,
+    MatchEventInfo,
     MatchHistoryPage,
     MatchMainInfo,
     MatchPlayResult,
@@ -43,7 +44,66 @@ def build_match_playing_text(opponent_name: str, opponent_type: str = "bot") -> 
 Тип соперника: <b>{opponent_line}</b>
 
 🥅 Идут периоды, броски и борьба за шайбу.
-Результат появится через несколько секунд.
+Матч длится ровно <b>1 минуту</b>.
+Голы будут появляться прямо во время игры.
+""".strip()
+
+
+
+def build_match_no_goal_live_text(result: MatchPlayResult) -> str:
+    opponent_type = "реальный соперник" if result.opponent_type == "player" else "команда-бот"
+
+    return f"""
+<b>🔥 Матч идёт</b>
+
+Соперник: <b>{safe(result.opponent_name)}</b>
+Тип соперника: <b>{opponent_type}</b>
+
+Счёт: <b>0 — 0</b>
+
+🧤 Вратари ловят всё подряд.
+Команды держат темп, трибуны ждут первый гол.
+""".strip()
+
+
+def build_match_goal_live_text(
+    result: MatchPlayResult,
+    *,
+    event: MatchEventInfo | None,
+    user_score: int,
+    opponent_score: int,
+    scorer_side: str,
+) -> str:
+    if scorer_side == "user":
+        title = "🥅 Шайба в воротах!"
+        side_line = "Твоя команда выходит вперёд!" if user_score > opponent_score else "Твоя команда возвращается в игру!"
+    else:
+        title = "🚨 Соперник забивает"
+        side_line = f"{safe(result.opponent_name)} меняет ход матча."
+
+    description = safe(event.description) if event is not None else side_line
+    moment = ""
+
+    if event is not None:
+        moment = f"\n🏒 Момент: <b>{safe(event.period_title)}</b> · {safe(event.time_text)}"
+
+    if user_score == opponent_score:
+        score_note = "Матч снова равный. Всё решится дальше."
+    elif user_score > opponent_score:
+        score_note = "Твоя команда впереди, но расслабляться рано."
+    else:
+        score_note = "Нужно отыгрываться. Матч ещё не закончен."
+
+    return f"""
+<b>{title}</b>
+
+{side_line}
+
+Счёт: <b>{user_score}</b> — <b>{opponent_score}</b>{moment}
+
+🔥 {description}
+
+{score_note}
 """.strip()
 
 
@@ -238,3 +298,13 @@ def build_match_details_text(match: MatchDetails) -> str:
 <b>Моменты</b>
 {chr(10).join(events) if events else 'Главные моменты не найдены.'}
 """.strip()
+
+
+def build_match_captcha_text(prompt: str, retry: str = "") -> str:
+    head = f"{retry}\n\n" if retry else ""
+    return (
+        f"{head}<b>🤖 Проверка перед матчем</b>\n\n"
+        f"{prompt}\n\n"
+        f"<i>Это защита от автокликеров. Займёт пару секунд.</i>"
+    )
+

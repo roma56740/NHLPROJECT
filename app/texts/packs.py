@@ -226,7 +226,7 @@ def build_pack_opening_result_text(result: PackOpeningResult) -> str:
     for index, reward in enumerate(result.rewards, start=1):
         rewards_lines.append(
             f"{index}. <b>{safe(reward.name)}</b> · {reward.position} · {reward.overall} OVR\n"
-            f"   {safe(reward.team)} · {safe(reward.country)} · {safe(reward.collection_name)} · {safe(reward.rarity)}"
+            f"   🏆 {safe(reward.collection_name)} · 🏒 {safe(reward.team)} · 🌍 {safe(reward.country)} · 💎 {safe(reward.rarity)}"
         )
 
     rewards_text = "\n".join(rewards_lines) if rewards_lines else "Пока пусто"
@@ -240,6 +240,118 @@ def build_pack_opening_result_text(result: PackOpeningResult) -> str:
 {rewards_text}
 
 Карточки уже добавлены в коллекцию.
+""".strip()
+
+
+def build_pack_opening_start_text(result: PackOpeningResult) -> str:
+    cards_count = len(result.rewards)
+    cards_word = "карта" if cards_count == 1 else "карт"
+
+    return f"""
+<b>✨ Открываем пак</b>
+
+🎁 Пак: <b>{safe(result.pack_name)}</b>
+🃏 Внутри: <b>{cards_count}</b> {cards_word}
+
+Сейчас начнётся раскрытие карточек.
+Сначала появится дивизион, затем команда, потом страна игрока.
+""".strip()
+
+
+def build_pack_animation_division_text(result: PackOpeningResult, reward, index: int, total: int) -> str:
+    return f"""
+<b>✨ Открытие пака</b>
+
+🎁 <b>{safe(result.pack_name)}</b>
+🃏 Карточка <b>{index}/{total}</b>
+
+┏━━━━━━━━━━━━━━━━━━━━┓
+┃ 🏆 ДИВИЗИОН
+┃ <b>{safe(reward.collection_name)}</b>
+┗━━━━━━━━━━━━━━━━━━━━┛
+
+Команда скоро появится...
+""".strip()
+
+
+def build_pack_animation_team_text(result: PackOpeningResult, reward, index: int, total: int) -> str:
+    return f"""
+<b>✨ Открытие пака</b>
+
+🎁 <b>{safe(result.pack_name)}</b>
+🃏 Карточка <b>{index}/{total}</b>
+
+┏━━━━━━━━━━━━━━━━━━━━┓
+┃ 🏆 Дивизион
+┃ <b>{safe(reward.collection_name)}</b>
+┣━━━━━━━━━━━━━━━━━━━━┫
+┃ 🏒 КОМАНДА
+┃ <b>{safe(reward.team)}</b>
+┗━━━━━━━━━━━━━━━━━━━━┛
+
+Страна игрока раскрывается...
+""".strip()
+
+
+def build_pack_animation_country_text(result: PackOpeningResult, reward, index: int, total: int) -> str:
+    return f"""
+<b>✨ Открытие пака</b>
+
+🎁 <b>{safe(result.pack_name)}</b>
+🃏 Карточка <b>{index}/{total}</b>
+
+┏━━━━━━━━━━━━━━━━━━━━┓
+┃ 🏆 Дивизион
+┃ <b>{safe(reward.collection_name)}</b>
+┣━━━━━━━━━━━━━━━━━━━━┫
+┃ 🏒 Команда
+┃ <b>{safe(reward.team)}</b>
+┣━━━━━━━━━━━━━━━━━━━━┫
+┃ 🌍 СТРАНА
+┃ <b>{safe(reward.country)}</b>
+┗━━━━━━━━━━━━━━━━━━━━┛
+
+Финальное раскрытие...
+""".strip()
+
+
+def build_pack_animation_reveal_text(result: PackOpeningResult, reward, index: int, total: int) -> str:
+    return f"""
+<b>🔥 Карточка раскрыта</b>
+
+🎁 <b>{safe(result.pack_name)}</b>
+🃏 Карточка <b>{index}/{total}</b>
+
+┏━━━━━━━━━━━━━━━━━━━━┓
+┃ <b>{safe(reward.name)}</b>
+┃ ⭐ {reward.overall} OVR · {safe(reward.position)}
+┃ 🏒 {safe(reward.team)}
+┃ 🌍 {safe(reward.country)}
+┃ 💎 {safe(reward.rarity)}
+┗━━━━━━━━━━━━━━━━━━━━┛
+""".strip()
+
+
+def build_pack_reward_caption(reward) -> str:
+    return f"""
+🃏 <b>{safe(reward.name)}</b>
+
+⭐ <b>{reward.overall} OVR</b> · {safe(reward.position)}
+🏒 {safe(reward.team)}
+🌍 {safe(reward.country)}
+🏆 {safe(reward.collection_name)}
+💎 {safe(reward.rarity)}
+""".strip()
+
+
+def build_pack_opening_finish_text(result: PackOpeningResult) -> str:
+    return f"""
+<b>✅ Пак открыт</b>
+
+🎁 <b>{safe(result.pack_name)}</b>
+🃏 Карточки добавлены в коллекцию.
+
+Можно открыть другие паки, посмотреть историю или перейти к своим карточкам.
 """.strip()
 
 

@@ -1,3 +1,4 @@
+from app.services.salary import format_salary
 from html import escape
 
 from app.services.user_cards import PlayerCardProfile, PlayerCardsPage
@@ -98,6 +99,7 @@ def build_player_card_profile_text(card: PlayerCardProfile) -> str:
 🌍 Страна: <b>{safe(card.country)}</b>
 🗂 Коллекция: <b>{safe(card.collection_name)}</b>
 ✨ Редкость: <b>{safe(card.rarity)}</b>
+💵 Зарплата: <b>{format_salary(card.salary)}</b>
 
 <b>Статус</b>
 Состав: <b>{lineup_status}</b>

@@ -14,7 +14,10 @@ LINEUP_CARDS_PER_PAGE = 5
 def build_lineup_main_keyboard(overview: LineupOverview) -> InlineKeyboardMarkup:
     keyboard: list[list[InlineKeyboardButton]] = []
 
-    keyboard.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="lineup:main")])
+    keyboard.append([
+        InlineKeyboardButton(text="⚡ Собрать лучших", callback_data="lineup:auto"),
+        InlineKeyboardButton(text="🔄 Обновить", callback_data="lineup:main"),
+    ])
 
     for slot_code in LINEUP_SLOT_ORDER:
         slot = get_slot_info(slot_code)

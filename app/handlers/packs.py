@@ -1,3 +1,4 @@
+from asyncio import sleep
 from datetime import datetime
 from pathlib import Path
 
@@ -75,8 +76,15 @@ from app.texts.packs import (
     build_admin_packs_page_text,
     build_pack_draft_text,
     build_pack_history_text,
+    build_pack_animation_country_text,
+    build_pack_animation_division_text,
+    build_pack_animation_reveal_text,
+    build_pack_animation_team_text,
     build_pack_opening_error_text,
+    build_pack_opening_finish_text,
     build_pack_opening_result_text,
+    build_pack_opening_start_text,
+    build_pack_reward_caption,
     build_user_pack_inventory_text,
     build_user_pack_profile_text,
 )
@@ -384,6 +392,19 @@ async def prompt_from_callback(callback: CallbackQuery, state: FSMContext, text:
     await edit_or_send(callback, text, reply_markup=reply_markup)
 
 
+async def edit_animation_message(message: Message, text: str) -> Message:
+    try:
+        await message.edit_text(text)
+        return message
+    except TelegramBadRequest:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        return await message.bot.send_message(chat_id=message.chat.id, text=text)
+
+
 async def show_pack_opening_result(callback: CallbackQuery, result) -> None:
     message = callback.message
 
@@ -392,27 +413,59 @@ async def show_pack_opening_result(callback: CallbackQuery, result) -> None:
         return
 
     await safe_delete_callback_message(callback)
-    await callback.bot.send_message(chat_id=message.chat.id, text=build_pack_opening_result_text(result))
 
-    for reward in result.rewards:
-        image_path = Path(reward.image_path) if reward.image_path else None
-        caption = (
-            f"🃏 <b>{reward.name}</b>\n\n"
-            f"⭐ {reward.overall} OVR · {reward.position}\n"
-            f"🏒 {reward.team}\n"
-            f"🌍 {reward.country}\n"
-            f"🎨 {reward.collection_name}\n"
-            f"💎 {reward.rarity}"
+    animation_message = await callback.bot.send_message(
+        chat_id=message.chat.id,
+        text=build_pack_opening_start_text(result),
+    )
+    await sleep(0.8)
+
+    total_rewards = len(result.rewards)
+
+    for index, reward in enumerate(result.rewards, start=1):
+        animation_message = await edit_animation_message(
+            animation_message,
+            build_pack_animation_division_text(result, reward, index, total_rewards),
         )
+        await sleep(0.9)
+
+        animation_message = await edit_animation_message(
+            animation_message,
+            build_pack_animation_team_text(result, reward, index, total_rewards),
+        )
+        await sleep(0.9)
+
+        animation_message = await edit_animation_message(
+            animation_message,
+            build_pack_animation_country_text(result, reward, index, total_rewards),
+        )
+        await sleep(0.9)
+
+        animation_message = await edit_animation_message(
+            animation_message,
+            build_pack_animation_reveal_text(result, reward, index, total_rewards),
+        )
+        await sleep(0.6)
+
+        image_path = Path(reward.image_path) if reward.image_path else None
+        caption = build_pack_reward_caption(reward)
 
         if image_path and image_path.exists():
             await callback.bot.send_photo(chat_id=message.chat.id, photo=FSInputFile(image_path), caption=caption)
         else:
             await callback.bot.send_message(chat_id=message.chat.id, text=caption)
 
+        await sleep(0.4)
+
+    try:
+        await animation_message.delete()
+    except Exception:
+        pass
+
+    await callback.bot.send_message(chat_id=message.chat.id, text=build_pack_opening_result_text(result))
     await callback.bot.send_message(
         chat_id=message.chat.id,
-        text="<b>✅ Карточки добавлены в коллекцию</b>",
+        text=build_pack_opening_finish_text(result),
         reply_markup=build_pack_opening_result_keyboard(),
     )
 
@@ -543,8 +596,8 @@ async def packs_open(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
 
+    await callback.answer("Открываем пак")
     await show_pack_opening_result(callback, result)
-    await callback.answer("Пак открыт")
 
 
 @router.callback_query(F.data.startswith("packs:history:"))

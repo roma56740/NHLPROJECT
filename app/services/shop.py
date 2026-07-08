@@ -166,6 +166,7 @@ async def purchase_shop_pack(user_id: int, pack_id: int) -> tuple[ShopPurchaseRe
     await ensure_user_balances(user_id, is_new_player=False)
 
     with get_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
         pack_cursor = connection.execute(
             """
             SELECT
@@ -187,9 +188,11 @@ async def purchase_shop_pack(user_id: int, pack_id: int) -> tuple[ShopPurchaseRe
         pack_row = pack_cursor.fetchone()
 
         if pack_row is None:
+            connection.rollback()
             return None, "Пак уже недоступен в магазине."
 
         if int(pack_row["selected_cards_count"] or 0) <= 0:
+            connection.rollback()
             return None, "Пак скоро появится. Состав наград ещё готовится."
 
         price_amount = int(pack_row["price_amount"] or 0)
@@ -218,9 +221,11 @@ async def purchase_shop_pack(user_id: int, pack_id: int) -> tuple[ShopPurchaseRe
                 )
 
                 if owned_row is not None and int(owned_row["quantity"] or 0) > 0:
+                    connection.rollback()
                     return None, "Подарочный пак уже ждёт открытия."
 
                 if opening_cursor.fetchone() is not None:
+                    connection.rollback()
                     return None, "Подарочный пак уже был получен. Такой бонус доступен один раз."
             else:
                 balance_cursor = connection.execute(
@@ -235,17 +240,22 @@ async def purchase_shop_pack(user_id: int, pack_id: int) -> tuple[ShopPurchaseRe
                 current_balance = int(balance_row["amount"] if balance_row else 0)
 
                 if current_balance < price_amount:
+                    connection.rollback()
                     return None, "Недостаточно средств для покупки."
 
                 balance_after = current_balance - price_amount
-                connection.execute(
+                deduct_cursor = connection.execute(
                     """
                     UPDATE currency_balances
-                    SET amount = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE user_id = ? AND currency_code = ?
+                    SET amount = amount - ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND currency_code = ? AND amount >= ?
                     """,
-                    (balance_after, user_id, currency_code),
+                    (price_amount, user_id, currency_code, price_amount),
                 )
+
+                if deduct_cursor.rowcount != 1:
+                    connection.rollback()
+                    return None, "Недостаточно средств для покупки."
 
             connection.execute(
                 """

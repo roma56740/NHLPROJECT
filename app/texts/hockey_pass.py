@@ -12,6 +12,8 @@ from app.services.hockey_pass import (
     RewardDraft,
     TRACK_TITLES,
     UserHockeyPassInfo,
+    UserHockeyPassMap,
+    UserHockeyPassLevel,
     UserRewardsPage,
     format_price,
     parse_stored_datetime,
@@ -109,8 +111,8 @@ ADMIN_HPASS_UPDATED_TEXT = "✅ Изменения сохранены."
 ADMIN_HPASS_DELETED_TEXT = "🗑 Hockey Pass удалён."
 ADMIN_HPASS_REWARD_SAVED_TEXT = "✅ Награда сохранена."
 ADMIN_HPASS_REWARD_DELETED_TEXT = "🗑 Награда удалена."
-ADMIN_HPASS_NOT_FOUND_TEXT = "Hockey Pass уже недоступен."
-ADMIN_HPASS_REWARD_NOT_FOUND_TEXT = "Награда уже недоступна."
+ADMIN_HPASS_NOT_FOUND_TEXT = "Экран устарел. Обнови раздел Hockey Pass."
+ADMIN_HPASS_REWARD_NOT_FOUND_TEXT = "Экран награды устарел. Открой список наград заново."
 
 
 def safe(value: object | None) -> str:
@@ -164,6 +166,102 @@ def build_user_hockey_pass_text(info: UserHockeyPassInfo) -> str:
         f"⏰ До: <b>{format_date(info.end_at)}</b>\n\n"
         "Открывай уровни, забирай награды и усиливай состав."
     )
+
+
+
+def _reward_status_text(reward: HockeyPassRewardItem) -> str:
+    if reward.claimed:
+        return "✅ получено"
+    if reward.available:
+        return "🎁 можно забрать"
+    if reward.track == "premium" and reward.locked_reason == "Нужен Premium":
+        return "🔒 нужен Premium"
+    if reward.locked_reason:
+        return f"🔒 {safe(reward.locked_reason).lower()}"
+    return "🔒 пока закрыто"
+
+
+def _reward_level_line(reward: HockeyPassRewardItem) -> str:
+    return f"{safe(reward.title)} — <b>{_reward_status_text(reward)}</b>"
+
+
+def _format_level_rewards(title: str, rewards: list[HockeyPassRewardItem]) -> list[str]:
+    if not rewards:
+        return [f"{title}: <i>награда не добавлена</i>"]
+    return [f"{title}: {_reward_level_line(reward)}" for reward in rewards]
+
+
+def _format_pass_level(level: UserHockeyPassLevel) -> str:
+    if level.is_current:
+        status = "🔥 текущий уровень"
+    elif level.is_unlocked:
+        status = "✅ открыт"
+    else:
+        status = "🔒 впереди"
+
+    lines = [
+        f"<b>{status} · Уровень {level.level}</b>",
+        f"📍 Нужно: <b>{format_number(level.points_required)} BP Points</b>",
+    ]
+    lines.extend(_format_level_rewards("🎟 Free", level.free_rewards))
+    lines.extend(_format_level_rewards("👑 Premium", level.premium_rewards))
+    return "\n".join(lines)
+
+
+def build_user_hockey_pass_map_text(pass_map: UserHockeyPassMap) -> str:
+    info = pass_map.info
+    if info.pass_id is None:
+        return HPASS_NO_ACTIVE_TEXT
+
+    premium_status = "👑 открыт" if info.premium_unlocked else "🔒 не открыт"
+    price = format_price(
+        info.premium_price_amount,
+        info.premium_currency_icon,
+        info.premium_currency_name,
+        info.premium_currency_code,
+    )
+    next_line = "максимальный уровень" if info.points_to_next <= 0 else f"ещё {info.points_to_next} BP Points"
+    available_count = sum(
+        1
+        for level in pass_map.levels
+        for reward in [*level.free_rewards, *level.premium_rewards]
+        if reward.available
+    )
+    available_line = "нет доступных наград" if available_count == 0 else f"можно забрать: {available_count}"
+
+    lines = [
+        f"<b>🎟 {safe(info.title)}</b>",
+        "",
+    ]
+    if info.description:
+        lines.extend([safe(info.description), ""])
+
+    lines.extend(
+        [
+            f"{build_progress_bar(info.level, info.levels_count)}",
+            f"⭐ Уровень: <b>{info.level}/{info.levels_count}</b>",
+            f"🔥 BP Points: <b>{format_number(info.bp_points)}</b>",
+            f"🚀 До следующего уровня: <b>{next_line}</b>",
+            f"🎁 Статус наград: <b>{available_line}</b>",
+            f"👑 Premium: <b>{premium_status}</b>",
+            f"💰 Цена Premium: <b>{price}</b>",
+            f"⏰ Сезон до: <b>{format_date(info.end_at)}</b>",
+            "",
+            f"<b>🧊 Карта уровней · страница {pass_map.page}/{pass_map.pages_count}</b>",
+            "",
+        ]
+    )
+
+    if pass_map.levels:
+        lines.append("\n\n".join(_format_pass_level(level) for level in pass_map.levels))
+    else:
+        lines.append("Уровни появятся после запуска сезона.")
+
+    lines.extend([
+        "",
+        "Нажимай на доступные награды ниже и забирай призы сразу.",
+    ])
+    return "\n".join(lines).strip()
 
 
 def build_user_rewards_page_text(page: UserRewardsPage) -> str:

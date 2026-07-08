@@ -74,14 +74,38 @@ DEFAULT_GAME_SETTINGS = [
     {
         "key": "start_energy",
         "value": "0",
-        "title": "Стартовая Energy",
-        "description": "Energy для нового игрока.",
+        "title": "Стартовые Рубли",
+        "description": "Рубли для нового игрока.",
     },
     {
         "key": "start_rank_points",
         "value": "0",
         "title": "Стартовые Rank-point",
         "description": "Rank-point для нового игрока.",
+    },
+    {
+        "key": "free_card_collection_code",
+        "value": "free-cards",
+        "title": "Коллекция бесплатной карточки",
+        "description": "Из этой коллекции игроки получают бесплатную карточку раз в 6 часов.",
+    },
+    {
+        "key": "free_card_cooldown_hours",
+        "value": "6",
+        "title": "Ожидание бесплатной карточки",
+        "description": "Через сколько часов игрок сможет забрать новую бесплатную карточку.",
+    },
+    {
+        "key": "loss_coins_reward",
+        "value": "250",
+        "title": "Награда за поражение",
+        "description": "Количество Coins за поражение в матче (0 — не начислять).",
+    },
+    {
+        "key": "bot_handicap_extra",
+        "value": "0",
+        "title": "Ослабление ботов",
+        "description": "На сколько дополнительно снизить OVR ботов (0-20). Больше значение — слабее боты.",
     },
 ]
 
@@ -109,6 +133,7 @@ CREATE TABLE IF NOT EXISTS users (
     team_country TEXT,
     team_logo_path TEXT,
     is_banned INTEGER NOT NULL DEFAULT 0,
+    trade_blocked INTEGER NOT NULL DEFAULT 0,
     privacy_public_cards INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -176,6 +201,7 @@ CREATE TABLE IF NOT EXISTS cards (
     collection_id INTEGER NOT NULL,
     rarity TEXT NOT NULL CHECK(rarity IN ('Common', 'Rare', 'Epic', 'Legendary', 'Event', 'Icon')),
     image_path TEXT NOT NULL,
+    salary INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -530,6 +556,30 @@ CREATE TABLE IF NOT EXISTS user_hockey_pass_rewards (
 );
 """
 
+CREATE_FREE_CARD_CLAIMS_TABLE = """
+CREATE TABLE IF NOT EXISTS free_card_claims (
+    user_id INTEGER PRIMARY KEY,
+    last_claimed_at TEXT,
+    last_notified_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
+
+CREATE_STARTER_KIT_CARDS_TABLE = """
+CREATE TABLE IF NOT EXISTS starter_kit_cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slot_code TEXT NOT NULL UNIQUE CHECK(slot_code IN ('G', 'D1', 'D2', 'F1', 'F2', 'F3')),
+    card_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
+);
+"""
+
+
 
 CREATE_CLANS_TABLE = """
 CREATE TABLE IF NOT EXISTS clans (
@@ -563,6 +613,7 @@ CREATE_TRADE_OFFERS_TABLE = """
 CREATE TABLE IF NOT EXISTS trade_offers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     creator_user_id INTEGER NOT NULL,
+    target_user_id INTEGER,
     wanted_type TEXT NOT NULL CHECK(wanted_type IN ('cards', 'currency')),
     wanted_currency_code TEXT,
     wanted_currency_amount INTEGER NOT NULL DEFAULT 0,
@@ -572,6 +623,7 @@ CREATE TABLE IF NOT EXISTS trade_offers (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (creator_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (accepted_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (wanted_currency_code) REFERENCES currencies(code) ON DELETE SET NULL
 );
@@ -767,6 +819,16 @@ CREATE_USER_HOCKEY_PASS_REWARDS_USER_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_user_hockey_pass_rewards_user_id ON user_hockey_pass_rewards(user_id);
 """
 
+CREATE_FREE_CARD_CLAIMS_NOTIFY_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_free_card_claims_notify ON free_card_claims(last_claimed_at, last_notified_at);
+"""
+
+
+CREATE_STARTER_KIT_CARDS_CARD_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_starter_kit_cards_card_id ON starter_kit_cards(card_id);
+"""
+
+
 
 CREATE_CLANS_ACTIVE_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_clans_active ON clans(active, rating_points);
@@ -782,6 +844,10 @@ CREATE INDEX IF NOT EXISTS idx_trade_offers_status ON trade_offers(status, creat
 
 CREATE_TRADE_OFFERS_CREATOR_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_trade_offers_creator ON trade_offers(creator_user_id, status);
+"""
+
+CREATE_TRADE_OFFERS_TARGET_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_trade_offers_target ON trade_offers(target_user_id, status);
 """
 
 CREATE_TRADE_OFFER_CARDS_OFFER_INDEX = """
@@ -888,9 +954,9 @@ DEFAULT_CURRENCIES = [
     },
     {
         "code": "energy",
-        "name": "Energy",
-        "icon": "⚡",
-        "description": "Валюта для отдельных игроков в магазине.",
+        "name": "Рубли",
+        "icon": "💵",
+        "description": "Премиальная валюта. За покупкой обращаться к @E4RFQ.",
     },
     {
         "code": "rank_point",
@@ -902,180 +968,274 @@ DEFAULT_CURRENCIES = [
 
 DEFAULT_COLLECTIONS = [
     {
-        "code": "default",
-        "name": "Base Collection",
-        "description": "Базовая коллекция карточек.",
-    },
-    {
-        "code": "pros-26",
-        "name": "Prospects 2026",
-        "description": "Коллекция молодых игроков.",
-    },
-    {
-        "code": "ranked",
-        "name": "Ranked",
-        "description": "Коллекция рейтинговых наград.",
-    },
-    {
-        "code": "superstars",
-        "name": "Superstars",
-        "description": "Коллекция суперзвёзд.",
-    },
-    {
-        "code": "TOTS",
-        "name": "TOTS",
-        "description": "Команда сезона.",
-    },
-    {
-        "code": "winners",
-        "name": "Winners",
-        "description": "Коллекция победителей.",
-    },
-    {
-        "code": "wch-26",
-        "name": "World Championship 2026",
-        "description": "Коллекция чемпионата мира 2026.",
-    },
-    {
-        "code": "died-legends-1",
-        "name": "DEAD LEGENDS I",
-        "description": "Событийная коллекция DEAD LEGENDS I.",
-    },
-    {
-        "code": "died-legends-2",
-        "name": "DEAD LEGENDS II",
-        "description": "Событийная коллекция DEAD LEGENDS II.",
+        "code": "free-cards",
+        "name": "Бесплатные карточки",
+        "description": "Коллекция для бесплатной карточки раз в 6 часов.",
     },
 ]
 
-DEFAULT_PACKS = [
-    {
-        "code": "common-pack",
-        "name": "Common Pack",
-        "description": "1 карточка из Base Collection.",
-        "image_path": "assets/packs/common-pack.png",
-        "price_currency_code": "coins",
-        "price_amount": 20000,
-        "is_shop_available": 1,
-        "is_starter": 0,
-        "sort_order": 10,
-    },
-    {
-        "code": "elite-pack",
-        "name": "Elite Pack",
-        "description": "3 карточки из Base Collection, одна из них 90+.",
-        "image_path": "assets/packs/elite-pack.png",
-        "price_currency_code": "coins",
-        "price_amount": 100000,
-        "is_shop_available": 1,
-        "is_starter": 0,
-        "sort_order": 20,
-    },
-    {
-        "code": "prospects-2026-pack",
-        "name": "Prospects 2026 Pack",
-        "description": "1 карточка из Prospects 2026.",
-        "image_path": "assets/packs/prospects-2026-pack.png",
-        "price_currency_code": "coins",
-        "price_amount": 70000,
-        "is_shop_available": 0,
-        "is_starter": 0,
-        "sort_order": 30,
-    },
-    {
-        "code": "starter-pack",
-        "name": "Starter Pack",
-        "description": "3 нападающих, 2 защитника и 1 вратарь из Base Collection.",
-        "image_path": "assets/packs/starter-pack.png",
-        "price_currency_code": None,
-        "price_amount": 0,
-        "is_shop_available": 0,
-        "is_starter": 1,
-        "sort_order": 40,
-    },
-    {
-        "code": "superstar-pack",
-        "name": "Superstar Pack",
-        "description": "1 карточка из Superstars.",
-        "image_path": "assets/packs/superstar-pack.png",
-        "price_currency_code": "coins",
-        "price_amount": 180000,
-        "is_shop_available": 0,
-        "is_starter": 0,
-        "sort_order": 50,
-    },
-    {
-        "code": "TOTS-pack",
-        "name": "TOTS Pack",
-        "description": "1 карточка из TOTS.",
-        "image_path": "assets/packs/TOTS-pack.png",
-        "price_currency_code": "coins",
-        "price_amount": 450000,
-        "is_shop_available": 0,
-        "is_starter": 0,
-        "sort_order": 60,
-    },
-    {
-        "code": "winners-pack",
-        "name": "Winners Pack",
-        "description": "1 карточка из Winners.",
-        "image_path": "assets/packs/winners-pack.png",
-        "price_currency_code": "coins",
-        "price_amount": 150000,
-        "is_shop_available": 1,
-        "is_starter": 0,
-        "sort_order": 70,
-    },
-    {
-        "code": "world-championship-2026-pack",
-        "name": "World Championship 2026 Pack",
-        "description": "1 карточка из World Championship 2026.",
-        "image_path": "assets/packs/world-championship-2026-pack.png",
-        "price_currency_code": "coins",
-        "price_amount": 150000,
-        "is_shop_available": 0,
-        "is_starter": 0,
-        "sort_order": 80,
-    },
-    {
-        "code": "ranked-pack",
-        "name": "Ranked Pack",
-        "description": "Шанс на особую рейтинговую карточку.",
-        "image_path": "assets/packs/ranked-pack.png",
-        "price_currency_code": "rank_point",
-        "price_amount": 1,
-        "is_shop_available": 1,
-        "is_starter": 0,
-        "sort_order": 90,
-    },
+LEGACY_DEMO_COLLECTION_CODES = [
+    "default",
+    "pros-26",
+    "ranked",
+    "superstars",
+    "TOTS",
+    "winners",
+    "wch-26",
+    "died-legends-1",
+    "died-legends-2",
 ]
 
-DEFAULT_PACK_SLOTS = [
-    {"pack_code": "common-pack", "slot_number": 1, "title": "Любая карта", "collection_code": "default"},
-    {"pack_code": "elite-pack", "slot_number": 1, "title": "Elite card 1", "collection_code": "default"},
-    {"pack_code": "elite-pack", "slot_number": 2, "title": "Elite card 2", "collection_code": "default"},
-    {"pack_code": "elite-pack", "slot_number": 3, "title": "Гарантия 90+", "collection_code": "default", "min_overall": 90},
-    {"pack_code": "prospects-2026-pack", "slot_number": 1, "title": "Prospects card", "collection_code": "pros-26"},
-    {"pack_code": "starter-pack", "slot_number": 1, "title": "Forward 1", "collection_code": "default", "position": "F"},
-    {"pack_code": "starter-pack", "slot_number": 2, "title": "Forward 2", "collection_code": "default", "position": "F"},
-    {"pack_code": "starter-pack", "slot_number": 3, "title": "Forward 3", "collection_code": "default", "position": "F"},
-    {"pack_code": "starter-pack", "slot_number": 4, "title": "Defense 1", "collection_code": "default", "position": "D"},
-    {"pack_code": "starter-pack", "slot_number": 5, "title": "Defense 2", "collection_code": "default", "position": "D"},
-    {"pack_code": "starter-pack", "slot_number": 6, "title": "Goalie", "collection_code": "default", "position": "G"},
-    {"pack_code": "superstar-pack", "slot_number": 1, "title": "Superstar card", "collection_code": "superstars"},
-    {"pack_code": "TOTS-pack", "slot_number": 1, "title": "TOTS card", "collection_code": "TOTS"},
-    {"pack_code": "winners-pack", "slot_number": 1, "title": "Winners card", "collection_code": "winners"},
-    {"pack_code": "world-championship-2026-pack", "slot_number": 1, "title": "World Championship card", "collection_code": "wch-26"},
-    {
-        "pack_code": "ranked-pack",
-        "slot_number": 1,
-        "title": "Ranked card",
-        "collection_code": "default",
-        "special_collection_code": "ranked",
-        "special_image_hint": "kucherov-rank.png",
-        "special_chance_percent": 20,
-    },
+LEGACY_DEMO_PACK_CODES = [
+    "common-pack",
+    "elite-pack",
+    "prospects-2026-pack",
+    "starter-pack",
+    "superstar-pack",
+    "TOTS-pack",
+    "winners-pack",
+    "world-championship-2026-pack",
+    "ranked-pack",
 ]
+
+DEFAULT_PACKS = []
+
+DEFAULT_PACK_SLOTS = []
+
+
+
+CREATE_CLAN_ARENAS_TABLE = """
+CREATE TABLE IF NOT EXISTS clan_arenas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    capture_wins_required INTEGER NOT NULL DEFAULT 10,
+    income_currency_code TEXT,
+    income_amount INTEGER NOT NULL DEFAULT 0,
+    capture_currency_code TEXT,
+    capture_amount INTEGER NOT NULL DEFAULT 0,
+    holder_clan_id INTEGER,
+    captured_at TEXT,
+    last_income_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (holder_clan_id) REFERENCES clans(id) ON DELETE SET NULL,
+    FOREIGN KEY (income_currency_code) REFERENCES currencies(code) ON DELETE SET NULL,
+    FOREIGN KEY (capture_currency_code) REFERENCES currencies(code) ON DELETE SET NULL
+);
+"""
+
+CREATE_CLAN_ARENA_ATTACKS_TABLE = """
+CREATE TABLE IF NOT EXISTS clan_arena_attacks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    arena_id INTEGER NOT NULL,
+    clan_id INTEGER NOT NULL,
+    started_by_user_id INTEGER,
+    points INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK(status IN ('active', 'won', 'failed')) DEFAULT 'active',
+    notified INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TEXT NOT NULL,
+    finished_at TEXT,
+    FOREIGN KEY (arena_id) REFERENCES clan_arenas(id) ON DELETE CASCADE,
+    FOREIGN KEY (clan_id) REFERENCES clans(id) ON DELETE CASCADE,
+    FOREIGN KEY (started_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+"""
+
+CREATE_CLAN_ARENAS_ACTIVE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_clan_arenas_active ON clan_arenas(active, holder_clan_id);
+"""
+
+CREATE_CLAN_ARENA_ATTACKS_STATUS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_clan_arena_attacks_status ON clan_arena_attacks(status, expires_at);
+"""
+
+CREATE_CLAN_ARENA_ATTACKS_CLAN_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_clan_arena_attacks_clan ON clan_arena_attacks(clan_id, status);
+"""
+
+
+
+
+CREATE_DAILY_LOGIN_CLAIMS_TABLE = """
+CREATE TABLE IF NOT EXISTS daily_login_claims (
+    user_id INTEGER PRIMARY KEY,
+    last_claim_date TEXT,
+    streak INTEGER NOT NULL DEFAULT 0,
+    total_claims INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_DAILY_LOGIN_REWARDS_TABLE = """
+CREATE TABLE IF NOT EXISTS daily_login_rewards (
+    day INTEGER PRIMARY KEY,
+    coins INTEGER NOT NULL DEFAULT 0,
+    rubles INTEGER NOT NULL DEFAULT 0,
+    pack_id INTEGER,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (pack_id) REFERENCES packs(id) ON DELETE SET NULL
+);
+"""
+
+DEFAULT_SEASON_REWARD_TIERS = [
+    ("T1", 500000, 100, None),
+    ("T2", 300000, 0, None),
+    ("T3", 200000, 0, None),
+    ("T4_10", 100000, 0, None),
+    ("T11_50", 50000, 0, None),
+]
+
+
+DEFAULT_DAILY_LOGIN_LADDER = [
+    (1, 500, 0, None),
+    (2, 1000, 0, None),
+    (3, 2000, 0, None),
+    (4, 3500, 0, None),
+    (5, 5000, 1, None),
+    (6, 7500, 1, None),
+    (7, 15000, 3, None),
+]
+
+
+
+
+CREATE_PROMO_CODES_TABLE = """
+CREATE TABLE IF NOT EXISTS promo_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    coins INTEGER NOT NULL DEFAULT 0,
+    rubles INTEGER NOT NULL DEFAULT 0,
+    pack_id INTEGER,
+    bp_points INTEGER NOT NULL DEFAULT 0,
+    max_activations INTEGER NOT NULL DEFAULT 0,
+    per_user_limit INTEGER NOT NULL DEFAULT 1,
+    activations_count INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (pack_id) REFERENCES packs(id) ON DELETE SET NULL
+);
+"""
+
+CREATE_PROMO_ACTIVATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS promo_code_activations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    promo_code_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (promo_code_id) REFERENCES promo_codes(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_PROMO_ACTIVATIONS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_promo_activations ON promo_code_activations(promo_code_id, user_id);
+"""
+
+
+
+
+CREATE_ACTIVE_MATCHES_TABLE = """
+CREATE TABLE IF NOT EXISTS active_matches (
+    user_id INTEGER PRIMARY KEY,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_CLAN_JOIN_REQUESTS_TABLE = """
+CREATE TABLE IF NOT EXISTS clan_join_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    clan_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')) DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT,
+    FOREIGN KEY (clan_id) REFERENCES clans(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_CLAN_JOIN_REQUESTS_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_clan_join_requests ON clan_join_requests(clan_id, status);
+"""
+
+
+
+
+CREATE_SEASONS_TABLE = """
+CREATE TABLE IF NOT EXISTS seasons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    number INTEGER NOT NULL,
+    ended_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    top_json TEXT NOT NULL DEFAULT '[]',
+    rewards_summary TEXT NOT NULL DEFAULT '',
+    players_count INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+CREATE_SEASON_REWARD_TIERS_TABLE = """
+CREATE TABLE IF NOT EXISTS season_reward_tiers (
+    tier_key TEXT PRIMARY KEY,
+    coins INTEGER NOT NULL DEFAULT 0,
+    rubles INTEGER NOT NULL DEFAULT 0,
+    pack_id INTEGER,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (pack_id) REFERENCES packs(id) ON DELETE SET NULL
+);
+"""
+
+CREATE_CREATOR_APPLICATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS creator_applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    channel TEXT NOT NULL,
+    subscribers INTEGER NOT NULL DEFAULT 0,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')) DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_CREATOR_INVENTORY_TABLE = """
+CREATE TABLE IF NOT EXISTS creator_inventory (
+    user_id INTEGER PRIMARY KEY,
+    coins INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_CREATOR_PACK_INVENTORY_TABLE = """
+CREATE TABLE IF NOT EXISTS creator_pack_inventory (
+    user_id INTEGER NOT NULL,
+    pack_id INTEGER NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, pack_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (pack_id) REFERENCES packs(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_CREATOR_DISTRIBUTIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS creator_distributions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    creator_user_id INTEGER NOT NULL,
+    target_user_id INTEGER NOT NULL,
+    reward_desc TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (creator_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
 
 SCHEMA_QUERIES = [
     CREATE_GAME_SETTINGS_TABLE,
@@ -1106,8 +1266,29 @@ SCHEMA_QUERIES = [
     CREATE_HOCKEY_PASS_REWARDS_TABLE,
     CREATE_USER_HOCKEY_PASSES_TABLE,
     CREATE_USER_HOCKEY_PASS_REWARDS_TABLE,
+    CREATE_FREE_CARD_CLAIMS_TABLE,
+    CREATE_STARTER_KIT_CARDS_TABLE,
     CREATE_CLANS_TABLE,
     CREATE_CLAN_MEMBERS_TABLE,
+    CREATE_CLAN_ARENAS_TABLE,
+    CREATE_CLAN_ARENA_ATTACKS_TABLE,
+    CREATE_CLAN_ARENAS_ACTIVE_INDEX,
+    CREATE_CLAN_ARENA_ATTACKS_STATUS_INDEX,
+    CREATE_CLAN_ARENA_ATTACKS_CLAN_INDEX,
+    CREATE_DAILY_LOGIN_CLAIMS_TABLE,
+    CREATE_DAILY_LOGIN_REWARDS_TABLE,
+    CREATE_PROMO_CODES_TABLE,
+    CREATE_PROMO_ACTIVATIONS_TABLE,
+    CREATE_PROMO_ACTIVATIONS_INDEX,
+    CREATE_ACTIVE_MATCHES_TABLE,
+    CREATE_CLAN_JOIN_REQUESTS_TABLE,
+    CREATE_CLAN_JOIN_REQUESTS_INDEX,
+    CREATE_SEASONS_TABLE,
+    CREATE_SEASON_REWARD_TIERS_TABLE,
+    CREATE_CREATOR_APPLICATIONS_TABLE,
+    CREATE_CREATOR_INVENTORY_TABLE,
+    CREATE_CREATOR_PACK_INVENTORY_TABLE,
+    CREATE_CREATOR_DISTRIBUTIONS_TABLE,
     CREATE_TRADE_OFFERS_TABLE,
     CREATE_TRADE_OFFER_CARDS_TABLE,
     CREATE_TRADE_OFFER_WANTED_CARDS_TABLE,
@@ -1147,10 +1328,13 @@ SCHEMA_QUERIES = [
     CREATE_HOCKEY_PASS_REWARDS_PASS_INDEX,
     CREATE_USER_HOCKEY_PASSES_USER_INDEX,
     CREATE_USER_HOCKEY_PASS_REWARDS_USER_INDEX,
+    CREATE_FREE_CARD_CLAIMS_NOTIFY_INDEX,
+    CREATE_STARTER_KIT_CARDS_CARD_INDEX,
     CREATE_CLANS_ACTIVE_INDEX,
     CREATE_CLAN_MEMBERS_CLAN_INDEX,
     CREATE_TRADE_OFFERS_STATUS_INDEX,
     CREATE_TRADE_OFFERS_CREATOR_INDEX,
+    CREATE_TRADE_OFFERS_TARGET_INDEX,
     CREATE_TRADE_OFFER_CARDS_OFFER_INDEX,
     CREATE_TRADE_OFFER_CARDS_CARD_INDEX,
     CREATE_TRADE_WANTED_CARDS_OFFER_INDEX,

@@ -5,10 +5,12 @@ SETTING_KEYS = [
     ("maintenance_mode", "🛠 Режим обслуживания"),
     ("season_key", "🎮 Текущий сезон"),
     ("win_coins_reward", "🏆 Coins за победу"),
+    ("loss_coins_reward", "💔 Coins за поражение"),
+    ("bot_handicap_extra", "🤖 Ослабление ботов"),
     ("matchmaking_min_wait_seconds", "⏱ Минимум поиска"),
     ("matchmaking_max_wait_seconds", "⏱ Максимум поиска"),
     ("start_coins", "🪙 Стартовые Coins"),
-    ("start_energy", "⚡ Стартовая Energy"),
+    ("start_energy", "💵 Стартовые Рубли"),
     ("start_rank_points", "🏅 Стартовые Rank-point"),
 ]
 

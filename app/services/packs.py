@@ -485,7 +485,7 @@ async def get_user_pack_inventory_page(user_id: int, page: int = 1, per_page: in
             LEFT JOIN pack_cards ON pack_cards.pack_id = packs.id
             WHERE user_packs.user_id = ? AND user_packs.quantity > 0 AND packs.active = 1
             GROUP BY user_packs.id
-            ORDER BY packs.sort_order, packs.id
+            ORDER BY packs.id DESC
             LIMIT ? OFFSET ?
             """,
             (user_id, per_page, offset),
@@ -558,22 +558,7 @@ async def give_pack_to_user_by_code(user_id: int, pack_code: str, quantity: int 
 
 
 async def ensure_starter_pack_for_user(user_id: int) -> None:
-    with get_connection() as connection:
-        cursor = connection.execute("SELECT id FROM packs WHERE code = 'starter-pack' AND active = 1")
-        row = cursor.fetchone()
-
-        if row is None:
-            return
-
-        connection.execute(
-            """
-            INSERT INTO user_packs (user_id, pack_id, quantity)
-            VALUES (?, ?, 1)
-            ON CONFLICT(user_id, pack_id) DO NOTHING
-            """,
-            (user_id, row["id"]),
-        )
-        connection.commit()
+    return None
 
 
 async def get_pack_choice_page(page: int = 1, per_page: int = 5, search: str | None = None) -> PackChoicePage:
@@ -605,7 +590,7 @@ async def get_pack_choice_page(page: int = 1, per_page: int = 5, search: str | N
             LEFT JOIN pack_slots ON pack_slots.pack_id = packs.id AND pack_slots.active = 1
             {where_sql}
             GROUP BY packs.id
-            ORDER BY packs.sort_order, packs.id
+            ORDER BY packs.id DESC
             LIMIT ? OFFSET ?
             """,
             [*params, per_page, offset],
@@ -660,7 +645,7 @@ async def get_admin_packs_page(page: int = 1, per_page: int = 5, search: str | N
             LEFT JOIN pack_cards ON pack_cards.pack_id = packs.id
             {where_sql}
             GROUP BY packs.id
-            ORDER BY packs.sort_order, packs.id
+            ORDER BY packs.id DESC
             LIMIT ? OFFSET ?
             """,
             [*params, per_page, offset],
@@ -1022,6 +1007,7 @@ async def remove_card_from_pack(pack_id: int, card_id: int) -> bool:
 
 async def open_user_pack(user_id: int, pack_id: int) -> tuple[PackOpeningResult | None, str | None]:
     with get_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
         pack_cursor = connection.execute(
             """
             SELECT id, code, name, price_currency_code, price_amount
@@ -1102,14 +1088,18 @@ async def open_user_pack(user_id: int, pack_id: int) -> tuple[PackOpeningResult 
             )
             opening_id = int(opening_cursor.lastrowid)
 
-            connection.execute(
+            decrement_cursor = connection.execute(
                 """
                 UPDATE user_packs
-                SET quantity = MAX(0, quantity - 1), updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = ? AND pack_id = ?
+                SET quantity = quantity - 1, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND pack_id = ? AND quantity >= 1
                 """,
                 (user_id, pack_id),
             )
+
+            if decrement_cursor.rowcount != 1:
+                connection.rollback()
+                return None, "Этого пака пока нет в коллекции."
 
             rewards: list[PackRewardItem] = []
 

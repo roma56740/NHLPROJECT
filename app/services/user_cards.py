@@ -42,6 +42,7 @@ class PlayerCardProfile:
     lock_until: str | None
     obtained_from: str
     created_at: str
+    salary: int = 0
 
 
 @dataclass(frozen=True)
@@ -311,6 +312,7 @@ async def get_player_card_profile(
                 cards.country,
                 cards.rarity,
                 cards.image_path,
+                cards.salary,
                 collections.code AS collection_code,
                 collections.name AS collection_name
             FROM user_cards
@@ -347,6 +349,7 @@ async def get_player_card_profile(
         lock_until=row["lock_until"],
         obtained_from=row["obtained_from"],
         created_at=row["created_at"],
+        salary=int(row["salary"] or 0),
     )
 
 

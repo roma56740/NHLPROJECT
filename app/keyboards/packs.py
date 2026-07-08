@@ -70,9 +70,10 @@ def build_user_pack_profile_keyboard(pack_id: int, page: int, quantity: int) -> 
 def build_pack_opening_result_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 Мои паки", callback_data="packs:inventory:1")],
+            [InlineKeyboardButton(text="🎁 Открыть ещё", callback_data="packs:inventory:1")],
+            [InlineKeyboardButton(text="♻️ Продать дубликаты", callback_data="user_cards:bulk_confirm:duplicates")],
             [InlineKeyboardButton(text="🃏 Мои карточки", callback_data="user_cards:list:1")],
-            [InlineKeyboardButton(text="📜 История", callback_data="packs:history:1")],
+            [InlineKeyboardButton(text="🏠 В меню", callback_data="menu:main")],
         ]
     )
 

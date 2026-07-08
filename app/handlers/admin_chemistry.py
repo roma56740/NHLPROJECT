@@ -252,6 +252,10 @@ async def chemistry_edit_type(callback: CallbackQuery, state: FSMContext) -> Non
 
 @router.callback_query(F.data.startswith("chemistry:set_type:"))
 async def chemistry_set_type(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await admin_only(callback):
+        await callback.answer("Раздел доступен только администрации", show_alert=True)
+        return
+
     data = await state.get_data()
     rule_id = int(data.get("rule_id", 0))
     rule_type = callback.data.split(":")[-1] if callback.data else ""
@@ -263,6 +267,10 @@ async def chemistry_set_type(callback: CallbackQuery, state: FSMContext) -> None
 
 @router.callback_query(F.data.startswith("chemistry:edit_required:"))
 async def chemistry_edit_required(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await admin_only(callback):
+        await callback.answer("Раздел доступен только администрации", show_alert=True)
+        return
+
     rule_id = int(callback.data.split(":")[-1]) if callback.data and callback.data.split(":")[-1].isdigit() else 0
     await state.update_data(rule_id=rule_id, field="required_cards")
     await edit_or_send(callback, "<b>📌 Сколько карточек нужно для бонуса?</b>", build_required_cards_keyboard("chemistry:set_required"))
@@ -271,6 +279,10 @@ async def chemistry_edit_required(callback: CallbackQuery, state: FSMContext) ->
 
 @router.callback_query(F.data.startswith("chemistry:set_required:"))
 async def chemistry_set_required(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await admin_only(callback):
+        await callback.answer("Раздел доступен только администрации", show_alert=True)
+        return
+
     data = await state.get_data()
     rule_id = int(data.get("rule_id", 0))
     required_cards = int(callback.data.split(":")[-1]) if callback.data and callback.data.split(":")[-1].isdigit() else 3
@@ -282,6 +294,10 @@ async def chemistry_set_required(callback: CallbackQuery, state: FSMContext) -> 
 
 @router.callback_query(F.data.startswith("chemistry:edit_bonus:"))
 async def chemistry_edit_bonus(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await admin_only(callback):
+        await callback.answer("Раздел доступен только администрации", show_alert=True)
+        return
+
     rule_id = int(callback.data.split(":")[-1]) if callback.data and callback.data.split(":")[-1].isdigit() else 0
     await state.update_data(rule_id=rule_id, field="bonus_ovr")
     await edit_or_send(callback, "<b>⭐ Какой бонус OVR дать составу?</b>", build_bonus_ovr_keyboard("chemistry:set_bonus"))
@@ -290,6 +306,10 @@ async def chemistry_edit_bonus(callback: CallbackQuery, state: FSMContext) -> No
 
 @router.callback_query(F.data.startswith("chemistry:set_bonus:"))
 async def chemistry_set_bonus(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await admin_only(callback):
+        await callback.answer("Раздел доступен только администрации", show_alert=True)
+        return
+
     data = await state.get_data()
     rule_id = int(data.get("rule_id", 0))
     bonus_ovr = int(callback.data.split(":")[-1]) if callback.data and callback.data.split(":")[-1].isdigit() else 1
@@ -301,6 +321,10 @@ async def chemistry_set_bonus(callback: CallbackQuery, state: FSMContext) -> Non
 
 @router.callback_query(F.data.startswith("chemistry:edit_value:"))
 async def chemistry_edit_value(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await admin_only(callback):
+        await callback.answer("Раздел доступен только администрации", show_alert=True)
+        return
+
     rule_id = int(callback.data.split(":")[-1]) if callback.data and callback.data.split(":")[-1].isdigit() else 0
     await state.update_data(rule_id=rule_id, field="value")
     await state.set_state(ChemistryEditStates.waiting_for_value)
@@ -379,4 +403,8 @@ async def chemistry_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "chemistry:page_info")
 async def chemistry_page_info(callback: CallbackQuery) -> None:
+    if not await admin_only(callback):
+        await callback.answer("Раздел доступен только администрации", show_alert=True)
+        return
+
     await callback.answer("Текущая страница")

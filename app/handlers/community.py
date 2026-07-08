@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+from html import escape
+
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.keyboards.community import (
     build_admin_clans_main_keyboard,
     build_admin_trades_main_keyboard,
+    build_clan_kick_confirm_keyboard,
+    build_clan_manage_keyboard,
+    build_clan_requests_keyboard,
+    build_clan_requests_shortcut_keyboard,
+    build_clan_member_manage_keyboard,
     build_clan_profile_keyboard,
     build_clans_list_keyboard,
     build_clans_main_keyboard,
     build_community_main_keyboard,
     build_currency_choice_keyboard,
+    build_direct_trade_players_keyboard,
     build_player_profile_keyboard,
     build_players_keyboard,
     build_text_cancel_keyboard,
@@ -28,17 +36,28 @@ from app.services.community import (
     accept_trade_offer,
     cancel_trade_offer,
     create_clan,
+    count_pending_requests,
+    get_clan_leaders_telegram_ids,
+    get_clan_member_row_public,
+    get_clan_member_telegram_id,
+    get_pending_requests,
+    resolve_join_request,
+    kick_clan_member,
+    toggle_clan_vice,
     create_trade_offer,
+    decline_trade_offer,
     delete_clan,
     delete_trade_offer,
     get_available_user_cards_page,
     get_card_choices_page,
     get_clan_profile,
     get_clans_page,
+    get_direct_trade_players_page,
     get_players_page,
     get_public_player_profile,
     get_selected_card_choices,
     get_selected_user_cards,
+    get_trade_offer_creator_telegram_id,
     get_trade_offer_profile,
     get_trade_offers_page,
     get_user_clan,
@@ -60,11 +79,16 @@ from app.texts.community import (
     PLAYERS_SEARCH_TEXT,
     TRADE_CREATE_TEXT,
     TRADE_CURRENCY_AMOUNT_TEXT,
+    TRADE_DIRECT_PLAYERS_TEXT,
+    TRADE_DIRECT_SEARCH_TEXT,
     TRADE_MAIN_TEXT,
     TRADE_WANTED_CARDS_TEXT,
     TRADE_WANTED_TEXT,
     build_action_result_text,
+    build_clan_member_manage_text,
     build_clan_profile_text,
+    build_clan_requests_text,
+    CLAN_MANAGE_TEXT,
     build_clans_page_text,
     build_players_page_text,
     build_public_player_profile_text,
@@ -81,6 +105,16 @@ router = Router()
 COMMUNITY_BUTTON_TEXT = "🤝 Сообщество"
 ADMIN_CLANS_BUTTON_TEXT = "🤝 Кланы"
 ADMIN_TRADES_BUTTON_TEXT = "🔁 Обмены"
+
+
+def build_direct_trade_notification_keyboard(offer_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Принять", callback_data=f"community:trade_accept:{offer_id}:incoming:1")],
+            [InlineKeyboardButton(text="❌ Отказаться", callback_data=f"community:trade_decline:{offer_id}:incoming:1")],
+            [InlineKeyboardButton(text="👀 Посмотреть обмен", callback_data=f"community:trade_view:{offer_id}:incoming:1")],
+        ]
+    )
 
 
 async def edit_or_send(callback: CallbackQuery, text: str, reply_markup=None) -> None:
@@ -179,6 +213,70 @@ async def trades_main(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == "community:trade_direct_search")
+async def trade_direct_search(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(CommunityStates.trade_direct_player_search)
+    await edit_or_send(callback, TRADE_DIRECT_SEARCH_TEXT, reply_markup=build_text_cancel_keyboard("community:trades"))
+    await callback.answer()
+
+
+@router.message(CommunityStates.trade_direct_player_search)
+async def trade_direct_search_value(message: Message, state: FSMContext) -> None:
+    user_id = get_user_id_by_telegram_id(message.from_user.id) if message.from_user else None
+    if user_id is None:
+        return
+    search = message.text or ""
+    await safe_delete_message(message)
+    await state.clear()
+    page = await get_direct_trade_players_page(user_id=user_id, page=1, per_page=COMMUNITY_PER_PAGE, search=search)
+    await message.answer(
+        TRADE_DIRECT_PLAYERS_TEXT + "\n\n" + build_players_page_text(page),
+        reply_markup=build_direct_trade_players_keyboard(page.players, page.page, page.pages_count),
+    )
+
+
+@router.callback_query(F.data.startswith("community:trade_direct_players:"))
+async def trade_direct_players_page(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id = await get_current_user_id(callback)
+    if user_id is None:
+        await callback.answer("Открой профиль через /start", show_alert=True)
+        return
+    page_num = int(callback.data.split(":")[-1]) if callback.data else 1
+    page = await get_direct_trade_players_page(user_id=user_id, page=page_num, per_page=COMMUNITY_PER_PAGE)
+    await edit_or_send(
+        callback,
+        TRADE_DIRECT_PLAYERS_TEXT + "\n\n" + build_players_page_text(page),
+        reply_markup=build_direct_trade_players_keyboard(page.players, page.page, page.pages_count),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("community:trade_direct_player:"))
+async def trade_direct_player_select(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user_id = await get_current_user_id(callback)
+    if user_id is None:
+        await callback.answer("Открой профиль через /start", show_alert=True)
+        return
+    parts = callback.data.split(":") if callback.data else []
+    target_user_id = int(parts[2])
+    await state.update_data(
+        offered_user_card_ids=[],
+        wanted_card_ids=[],
+        offer_card_search=None,
+        wanted_card_search=None,
+        target_user_id=target_user_id,
+    )
+    page = await get_available_user_cards_page(user_id=user_id, page=1, per_page=COMMUNITY_PER_PAGE)
+    await edit_or_send(
+        callback,
+        TRADE_CREATE_TEXT + "\n\n🎯 Личное предложение выбранному игроку.\n\n" + build_trade_user_cards_page_text(page),
+        reply_markup=build_trade_cards_keyboard(page.cards, page.page, page.pages_count, page.selected_ids),
+    )
+    await callback.answer("Игрок выбран")
+
+
 @router.callback_query(F.data == "community:trade_create")
 async def trade_create(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -186,7 +284,7 @@ async def trade_create(callback: CallbackQuery, state: FSMContext) -> None:
     if user_id is None:
         await callback.answer("Открой профиль через /start", show_alert=True)
         return
-    await state.update_data(offered_user_card_ids=[], wanted_card_ids=[], offer_card_search=None, wanted_card_search=None)
+    await state.update_data(offered_user_card_ids=[], wanted_card_ids=[], offer_card_search=None, wanted_card_search=None, target_user_id=None)
     page = await get_available_user_cards_page(user_id=user_id, page=1, per_page=COMMUNITY_PER_PAGE)
     await edit_or_send(
         callback,
@@ -321,8 +419,18 @@ async def trade_currency_amount(message: Message, state: FSMContext) -> None:
         wanted_type="currency",
         wanted_currency_code=data.get("wanted_currency_code"),
         wanted_currency_amount=int(raw_amount),
+        target_user_id=data.get("target_user_id"),
     )
     await state.clear()
+    if result.ok and result.target_telegram_id and result.offer_id:
+        try:
+            await message.bot.send_message(
+                result.target_telegram_id,
+                f"<b>🔁 Новое предложение обмена</b>\n\nТебе отправили личный обмен. Можно сразу принять, отказаться или посмотреть детали.",
+                reply_markup=build_direct_trade_notification_keyboard(result.offer_id),
+            )
+        except Exception:
+            pass
     await message.answer(build_action_result_text(result.title, result.description), reply_markup=build_trades_main_keyboard())
 
 
@@ -397,8 +505,18 @@ async def trade_publish_cards(callback: CallbackQuery, state: FSMContext) -> Non
         offered_user_card_ids=data.get("offered_user_card_ids", []),
         wanted_type="cards",
         wanted_card_ids=data.get("wanted_card_ids", []),
+        target_user_id=data.get("target_user_id"),
     )
     await state.clear()
+    if result.ok and result.target_telegram_id and result.offer_id:
+        try:
+            await callback.bot.send_message(
+                result.target_telegram_id,
+                f"<b>🔁 Новое предложение обмена</b>\n\nТебе отправили личный обмен. Можно сразу принять, отказаться или посмотреть детали.",
+                reply_markup=build_direct_trade_notification_keyboard(result.offer_id),
+            )
+        except Exception:
+            pass
     await edit_or_send(callback, build_action_result_text(result.title, result.description), reply_markup=build_trades_main_keyboard())
     await callback.answer()
 
@@ -442,6 +560,31 @@ async def trade_accept(callback: CallbackQuery, state: FSMContext) -> None:
     mode = parts[3]
     page_num = int(parts[4])
     result = await accept_trade_offer(offer_id, user_id)
+    offer = await get_trade_offer_profile(offer_id)
+    if offer:
+        await edit_or_send(callback, build_trade_offer_profile_text(offer) + f"\n\n{result.description}", reply_markup=build_trade_offer_profile_keyboard(offer, user_id, mode, page_num))
+    else:
+        await edit_or_send(callback, build_action_result_text(result.title, result.description), reply_markup=build_trades_main_keyboard())
+    await callback.answer(result.title, show_alert=not result.ok)
+
+
+@router.callback_query(F.data.startswith("community:trade_decline:"))
+async def trade_decline(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id = await get_current_user_id(callback)
+    if user_id is None:
+        await callback.answer("Открой профиль через /start", show_alert=True)
+        return
+    parts = callback.data.split(":") if callback.data else []
+    offer_id = int(parts[2])
+    mode = parts[3]
+    page_num = int(parts[4])
+    result = await decline_trade_offer(offer_id, user_id)
+    creator_telegram_id = await get_trade_offer_creator_telegram_id(offer_id)
+    if result.ok and creator_telegram_id:
+        try:
+            await callback.bot.send_message(creator_telegram_id, "<b>🔁 Личный обмен отклонён</b>\n\nИгрок отказался от предложения.")
+        except Exception:
+            pass
     offer = await get_trade_offer_profile(offer_id)
     if offer:
         await edit_or_send(callback, build_trade_offer_profile_text(offer) + f"\n\n{result.description}", reply_markup=build_trade_offer_profile_keyboard(offer, user_id, mode, page_num))
@@ -569,11 +712,82 @@ async def clan_join(callback: CallbackQuery, state: FSMContext) -> None:
     parts = callback.data.split(":") if callback.data else []
     clan_id = int(parts[2])
     result = await join_clan(user_id, clan_id)
+
+    # Уведомляем президента и вице о новой заявке.
+    if result.ok:
+        applicant = await get_clan_member_row_public(user_id)
+        applicant_name = applicant["nickname"] if applicant else "Игрок"
+        for leader_tg in await get_clan_leaders_telegram_ids(clan_id):
+            try:
+                await callback.bot.send_message(
+                    chat_id=leader_tg,
+                    text=(
+                        f"📥 <b>Новая заявка в клан</b>\n\n"
+                        f"👤 <b>{escape(applicant_name, quote=False)}</b> хочет вступить.\n\n"
+                        f"Открой «Управление составом» → «Заявки», чтобы принять или отклонить."
+                    ),
+                    reply_markup=build_clan_requests_shortcut_keyboard(),
+                )
+            except Exception:
+                pass
+
     profile = await get_clan_profile(clan_id, viewer_user_id=user_id)
     if profile:
         await edit_or_send(callback, build_clan_profile_text(profile) + f"\n\n{result.description}", reply_markup=build_clan_profile_keyboard(profile, 1))
     else:
         await edit_or_send(callback, build_action_result_text(result.title, result.description), reply_markup=build_clans_main_keyboard(has_clan=False))
+    await callback.answer(result.title, show_alert=not result.ok)
+
+
+@router.callback_query(F.data == "community:clan_requests")
+async def clan_requests(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user_id, profile = await get_actor_clan_context(callback)
+    if profile is None:
+        return
+    requests = await get_pending_requests(profile.id)
+    await edit_or_send(
+        callback,
+        build_clan_requests_text(requests),
+        reply_markup=build_clan_requests_keyboard(requests),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("community:clan_req_approve:"))
+async def clan_req_approve(callback: CallbackQuery, state: FSMContext) -> None:
+    await _resolve_clan_request(callback, approve=True)
+
+
+@router.callback_query(F.data.startswith("community:clan_req_reject:"))
+async def clan_req_reject(callback: CallbackQuery, state: FSMContext) -> None:
+    await _resolve_clan_request(callback, approve=False)
+
+
+async def _resolve_clan_request(callback: CallbackQuery, approve: bool) -> None:
+    user_id = await get_current_user_id(callback)
+    if user_id is None:
+        await callback.answer("Открой профиль через /start", show_alert=True)
+        return
+    raw = callback.data.split(":")[-1] if callback.data else ""
+    request_id = int(raw) if raw.isdigit() else 0
+    result, applicant_tg = await resolve_join_request(user_id, request_id, approve)
+
+    if result.ok and applicant_tg:
+        text = (
+            "✅ <b>Заявка одобрена</b>\n\nТебя приняли в клан! Загляни в раздел «Сообщество»."
+            if approve
+            else "❌ <b>Заявка отклонена</b>\n\nПрезидент клана отклонил твою заявку."
+        )
+        try:
+            await callback.bot.send_message(chat_id=applicant_tg, text=text)
+        except Exception:
+            pass
+
+    profile = await get_user_clan(user_id)
+    if profile is not None:
+        requests = await get_pending_requests(profile.id)
+        await edit_or_send(callback, build_clan_requests_text(requests), reply_markup=build_clan_requests_keyboard(requests))
     await callback.answer(result.title, show_alert=not result.ok)
 
 
@@ -585,6 +799,141 @@ async def clan_leave(callback: CallbackQuery, state: FSMContext) -> None:
         return
     result = await leave_clan(user_id)
     await edit_or_send(callback, build_action_result_text(result.title, result.description), reply_markup=build_clans_main_keyboard(has_clan=False))
+    await callback.answer(result.title, show_alert=not result.ok)
+
+
+async def get_actor_clan_context(callback: CallbackQuery):
+    """Возвращает (user_id, ClanProfile) для управляющего составом или (None, None)."""
+    user_id = await get_current_user_id(callback)
+    if user_id is None:
+        await callback.answer("Открой профиль через /start", show_alert=True)
+        return None, None
+    profile = await get_user_clan(user_id)
+    if profile is None:
+        await callback.answer("Ты пока не состоишь в клане", show_alert=True)
+        return None, None
+    if profile.viewer_role not in ("leader", "officer"):
+        await callback.answer("Управлять составом могут президент и вице-президент", show_alert=True)
+        return None, None
+    return user_id, profile
+
+
+@router.callback_query(F.data == "community:clan_manage")
+async def clan_manage(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user_id, profile = await get_actor_clan_context(callback)
+    if profile is None:
+        return
+    pending_count = await count_pending_requests(profile.id)
+    await edit_or_send(
+        callback,
+        CLAN_MANAGE_TEXT,
+        reply_markup=build_clan_manage_keyboard(profile.members, actor_user_id=user_id, actor_role=profile.viewer_role, pending_count=pending_count),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("community:clan_member:"))
+async def clan_member_view(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user_id, profile = await get_actor_clan_context(callback)
+    if profile is None:
+        return
+    raw_id = callback.data.split(":")[-1] if callback.data else ""
+    member_user_id = int(raw_id) if raw_id.isdigit() else 0
+    member = next((item for item in profile.members if item.user_id == member_user_id), None)
+    if member is None or member.role == "leader" or member.user_id == user_id:
+        await callback.answer("Игрок недоступен для управления", show_alert=True)
+        return
+    if profile.viewer_role == "officer" and member.role == "officer":
+        await callback.answer("Вице-президент может управлять только участниками", show_alert=True)
+        return
+    await edit_or_send(
+        callback,
+        build_clan_member_manage_text(member.nickname, member.role),
+        reply_markup=build_clan_member_manage_keyboard(member.user_id, member.role, actor_role=profile.viewer_role),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("community:clan_vice:"))
+async def clan_vice(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id, profile = await get_actor_clan_context(callback)
+    if profile is None:
+        return
+    raw_id = callback.data.split(":")[-1] if callback.data else ""
+    member_user_id = int(raw_id) if raw_id.isdigit() else 0
+    result = await toggle_clan_vice(user_id, member_user_id)
+
+    if result.ok:
+        target_telegram_id = await get_clan_member_telegram_id(member_user_id)
+        if target_telegram_id:
+            notify_text = (
+                "🥈 <b>Новая роль в клане</b>\n\nТебя назначили вице-президентом клана. Теперь ты можешь управлять составом."
+                if "назначен" in result.title.lower()
+                else "🏒 <b>Роль в клане обновлена</b>\n\nТы снова обычный участник клана."
+            )
+            try:
+                await callback.bot.send_message(chat_id=target_telegram_id, text=notify_text)
+            except Exception:
+                pass
+
+    updated_profile = await get_user_clan(user_id)
+    if updated_profile is not None:
+        await edit_or_send(
+            callback,
+            CLAN_MANAGE_TEXT,
+            reply_markup=build_clan_manage_keyboard(updated_profile.members, actor_user_id=user_id, actor_role=updated_profile.viewer_role),
+        )
+    await callback.answer(result.title, show_alert=not result.ok)
+
+
+@router.callback_query(F.data.startswith("community:clan_kick_confirm:"))
+async def clan_kick_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id, profile = await get_actor_clan_context(callback)
+    if profile is None:
+        return
+    raw_id = callback.data.split(":")[-1] if callback.data else ""
+    member_user_id = int(raw_id) if raw_id.isdigit() else 0
+    member = next((item for item in profile.members if item.user_id == member_user_id), None)
+    if member is None:
+        await callback.answer("Игрок уже не в клане", show_alert=True)
+        return
+    await edit_or_send(
+        callback,
+        f"<b>🚫 Исключить игрока?</b>\n\n👤 <b>{escape(member.nickname, quote=False)}</b> покинет клан, место освободится.",
+        reply_markup=build_clan_kick_confirm_keyboard(member_user_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("community:clan_kick:"))
+async def clan_kick(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id, profile = await get_actor_clan_context(callback)
+    if profile is None:
+        return
+    raw_id = callback.data.split(":")[-1] if callback.data else ""
+    member_user_id = int(raw_id) if raw_id.isdigit() else 0
+    result = await kick_clan_member(user_id, member_user_id)
+
+    if result.ok:
+        target_telegram_id = await get_clan_member_telegram_id(member_user_id)
+        if target_telegram_id:
+            try:
+                await callback.bot.send_message(
+                    chat_id=target_telegram_id,
+                    text="🚫 <b>Клан покинут</b>\n\nТебя исключили из клана. Ты можешь вступить в другую команду в разделе «Сообщество».",
+                )
+            except Exception:
+                pass
+
+    updated_profile = await get_user_clan(user_id)
+    if updated_profile is not None:
+        await edit_or_send(
+            callback,
+            CLAN_MANAGE_TEXT,
+            reply_markup=build_clan_manage_keyboard(updated_profile.members, actor_user_id=user_id, actor_role=updated_profile.viewer_role),
+        )
     await callback.answer(result.title, show_alert=not result.ok)
 
 

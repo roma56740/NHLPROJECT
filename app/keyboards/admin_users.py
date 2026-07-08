@@ -70,9 +70,11 @@ def build_admin_user_profile_keyboard(
     page: int,
     premium_pass: bool,
     is_banned: bool,
+    trade_blocked: bool = False,
 ) -> InlineKeyboardMarkup:
     premium_text = "👑 Отключить Premium Pass" if premium_pass else "👑 Открыть Premium Pass"
     ban_text = "✅ Вернуть игрока" if is_banned else "🚫 Заблокировать"
+    trade_text = "✅ Открыть обмены" if trade_blocked else "🔒 Закрыть обмены"
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -81,6 +83,7 @@ def build_admin_user_profile_keyboard(
             [InlineKeyboardButton(text="💱 Выдать валюту", callback_data=f"admin_users:currency:{user_id}:{page}")],
             [InlineKeyboardButton(text="🏆 Изменить лигу", callback_data=f"admin_users:league:{user_id}:{page}")],
             [InlineKeyboardButton(text=premium_text, callback_data=f"admin_users:premium:{user_id}:{page}")],
+            [InlineKeyboardButton(text=trade_text, callback_data=f"admin_users:trade_block:{user_id}:{page}")],
             [InlineKeyboardButton(text=ban_text, callback_data=f"admin_users:ban:{user_id}:{page}")],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"admin_users:view:{user_id}:{page}")],
             [InlineKeyboardButton(text="⬅️ К игрокам", callback_data=f"admin_users:list:{page}")],

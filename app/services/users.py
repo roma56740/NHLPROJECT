@@ -5,6 +5,7 @@ from aiogram.types import User as TelegramUser
 from app.database.db import get_connection
 from app.services.currencies import CurrencyBalance, ensure_user_balances, get_user_balances
 from app.services.hockey_pass import get_active_pass_row
+from app.services.starter_kit import give_starter_kit_to_new_user
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class PlayerProfile:
     is_banned: bool
     is_new: bool
     balances: list[CurrencyBalance]
+    is_creator: bool = False
 
 
 TEAM_PROFILE_LEAGUE = "OLYMPICS"
@@ -114,6 +116,10 @@ async def register_or_update_player(telegram_user: TelegramUser) -> PlayerProfil
         raise RuntimeError("Не удалось создать профиль игрока")
 
     await ensure_user_balances(user_row["id"], is_new_player=is_new)
+
+    if is_new:
+        await give_starter_kit_to_new_user(user_row["id"])
+
     balances = await get_user_balances(user_row["id"])
     hockey_pass_title, hockey_pass_premium_active = await get_active_player_hockey_pass_state(user_row["id"])
 
@@ -295,6 +301,7 @@ def build_player_profile(
         is_banned=bool(row["is_banned"]),
         is_new=is_new,
         balances=balances,
+        is_creator=bool(row["is_creator"]) if "is_creator" in row.keys() else False,
     )
 
 
@@ -321,7 +328,8 @@ async def get_player_row_by_telegram_id(telegram_id: int):
                 team_country,
                 team_logo_path,
                 privacy_public_cards,
-                is_banned
+                is_banned,
+                is_creator
             FROM users
             WHERE telegram_id = ?
             """,

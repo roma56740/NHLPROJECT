@@ -144,21 +144,163 @@ def create_database_backup_file() -> Path | None:
     return backup_path
 
 
+def _safe_archive_part(value: str | None, fallback: str = "Без названия") -> str:
+    text = (value or "").strip() or fallback
+    for bad_char in '<>:"/\\|?*':
+        text = text.replace(bad_char, " ")
+    text = " ".join(text.replace("\n", " ").replace("\r", " ").split())
+    text = text.strip(" .")
+    return text or fallback
+
+
+def _safe_archive_filename(value: str | None, fallback: str = "file") -> str:
+    return _safe_archive_part(value, fallback=fallback).replace(" ", "_")
+
+
+def _build_card_archive_path(row: sqlite3.Row, file_path: Path) -> str:
+    collection = _safe_archive_part(row["collection_name"], "Без коллекции")
+    position = _safe_archive_part(row["position"], "Без позиции")
+    rarity = _safe_archive_part(row["rarity"], "Без редкости")
+    card_name = _safe_archive_filename(row["name"], "card")
+    team = _safe_archive_filename(row["team"], "team")
+    country = _safe_archive_filename(row["country"], "country")
+    card_id = int(row["id"])
+    overall = int(row["overall"])
+    suffix = file_path.suffix or ".jpg"
+
+    file_name = f"ID_{card_id}_OVR_{overall}_{rarity}_{card_name}_{team}_{country}{suffix}"
+    return f"Карты/{collection}/{position}/OVR_{overall:02d}/{file_name}"
+
+
+def _load_card_image_rows() -> dict[str, list[sqlite3.Row]]:
+    with get_connection() as connection:
+        if not _table_exists(connection, "cards") or not _table_exists(connection, "collections"):
+            return {}
+
+        rows = connection.execute(
+            """
+            SELECT
+                cards.id,
+                cards.name,
+                cards.position,
+                cards.overall,
+                cards.team,
+                cards.country,
+                cards.rarity,
+                cards.image_path,
+                collections.name AS collection_name
+            FROM cards
+            LEFT JOIN collections ON collections.id = cards.collection_id
+            WHERE TRIM(cards.image_path) != ''
+            ORDER BY
+                collections.name COLLATE NOCASE ASC,
+                CASE cards.position
+                    WHEN 'G' THEN 1
+                    WHEN 'D' THEN 2
+                    WHEN 'F' THEN 3
+                    ELSE 4
+                END ASC,
+                cards.overall DESC,
+                cards.name COLLATE NOCASE ASC,
+                cards.id ASC
+            """
+        ).fetchall()
+
+    card_rows: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        image_path = str(row["image_path"] or "").replace("\\", "/").lstrip("/")
+        if not image_path:
+            continue
+        card_rows.setdefault(image_path, []).append(row)
+        card_rows.setdefault(Path(image_path).as_posix(), []).append(row)
+        card_rows.setdefault(Path(image_path).name, []).append(row)
+    return card_rows
+
+
+def _find_card_rows(card_rows: dict[str, list[sqlite3.Row]], file_path: Path) -> list[sqlite3.Row]:
+    normalized_path = file_path.as_posix()
+    relative_upload_path = file_path.relative_to(UPLOADS_DIR).as_posix()
+    candidates = (
+        normalized_path,
+        relative_upload_path,
+        f"assets/uploads/{relative_upload_path}",
+        file_path.name,
+    )
+
+    result: list[sqlite3.Row] = []
+    seen_ids: set[int] = set()
+    for candidate in candidates:
+        for row in card_rows.get(candidate, []):
+            row_id = int(row["id"])
+            if row_id in seen_ids:
+                continue
+            seen_ids.add(row_id)
+            result.append(row)
+    return result
+
+
+def _build_upload_archive_path(file_path: Path) -> str:
+    relative_path = file_path.relative_to(UPLOADS_DIR)
+    first_part = relative_path.parts[0] if relative_path.parts else "other"
+
+    folder_titles = {
+        "packs": "Паки",
+        "team_logos": "Логотипы команд",
+        "events": "События",
+    }
+
+    if first_part in folder_titles:
+        rest = Path(*relative_path.parts[1:]).as_posix() if len(relative_path.parts) > 1 else file_path.name
+        return f"{folder_titles[first_part]}/{rest}"
+
+    if first_part == "cards":
+        return f"Карты/Без карточки в базе/{file_path.name}"
+
+    return f"Другие изображения/{relative_path.as_posix()}"
+
+
 def create_uploads_archive() -> Path | None:
     if not UPLOADS_DIR.exists():
         return None
 
-    files = [path for path in UPLOADS_DIR.rglob("*") if path.is_file()]
+    files = sorted(
+        [path for path in UPLOADS_DIR.rglob("*") if path.is_file()],
+        key=lambda path: path.as_posix().lower(),
+    )
     if not files:
         return None
 
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     archive_path = EXPORTS_DIR / f"nhl_bot_uploads_{timestamp}.zip"
+    card_rows = _load_card_image_rows()
 
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "README.txt",
+            "Архив изображений NHL Card Bot.\n"
+            "Карты разложены по папкам: Карты / коллекция / позиция / OVR.\n"
+            "Изображения паков, событий и логотипов команд лежат в отдельных папках.\n",
+        )
+        added_names: set[str] = {"README.txt"}
+
         for file_path in files:
-            archive.write(file_path, file_path.as_posix())
+            rows = _find_card_rows(card_rows, file_path) if "cards" in file_path.parts else []
+
+            if rows:
+                for row in rows:
+                    archive_name = _build_card_archive_path(row, file_path)
+                    if archive_name in added_names:
+                        archive_name = f"Карты/Повторы/{int(row['id'])}_{file_path.name}"
+                    archive.write(file_path, archive_name)
+                    added_names.add(archive_name)
+                continue
+
+            archive_name = _build_upload_archive_path(file_path)
+            if archive_name in added_names:
+                archive_name = f"Другие изображения/Повторы/{file_path.name}"
+            archive.write(file_path, archive_name)
+            added_names.add(archive_name)
 
     return archive_path
 

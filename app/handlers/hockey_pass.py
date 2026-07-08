@@ -23,6 +23,7 @@ from app.keyboards.hockey_pass import (
     build_reward_type_keyboard,
     build_track_keyboard,
     build_user_hockey_pass_keyboard,
+    build_user_hockey_pass_map_keyboard,
     build_user_reward_keyboard,
     build_user_rewards_keyboard,
 )
@@ -42,6 +43,7 @@ from app.services.hockey_pass import (
     get_passes_page,
     get_reward_profile,
     get_user_hockey_pass_info,
+    get_user_hockey_pass_map,
     get_user_rewards_page,
     parse_moscow_datetime,
     parse_positive_int,
@@ -90,6 +92,7 @@ from app.texts.hockey_pass import (
     build_premium_buy_text,
     build_premium_purchase_result_text,
     build_reward_draft_text,
+    build_user_hockey_pass_map_text,
     build_user_hockey_pass_text,
     build_user_reward_profile_text,
     build_user_rewards_page_text,
@@ -195,6 +198,7 @@ async def clear_prompt_from_state(event: Message | CallbackQuery, state: FSMCont
         bot = event.bot
     else:
         if not isinstance(event.message, Message):
+            await state.update_data(prompt_message_id=None)
             return
         chat_id = event.message.chat.id
         bot = event.bot
@@ -204,13 +208,32 @@ async def clear_prompt_from_state(event: Message | CallbackQuery, state: FSMCont
     except TelegramBadRequest:
         pass
 
+    await state.update_data(prompt_message_id=None)
 
-async def show_user_main(callback: CallbackQuery) -> None:
-    info = await get_user_hockey_pass_info(callback.from_user.id)
-    if info is None:
+
+async def clear_admin_step(event: Message | CallbackQuery, state: FSMContext) -> None:
+    await clear_prompt_from_state(event, state)
+    if isinstance(event, Message):
+        if event.from_user:
+            await delete_old_message(event.bot, event.from_user.id)
+    else:
+        await delete_old_message(event.bot, event.from_user.id)
+
+
+async def show_user_pass_page(callback: CallbackQuery, page: int = 1) -> None:
+    pass_map = await get_user_hockey_pass_map(callback.from_user.id, page=page)
+    if pass_map is None:
         await callback.answer("Открой игру через /start", show_alert=True)
         return
-    await edit_or_send(callback, build_user_hockey_pass_text(info), reply_markup=build_user_hockey_pass_keyboard(info))
+    await edit_or_send(
+        callback,
+        build_user_hockey_pass_map_text(pass_map),
+        reply_markup=build_user_hockey_pass_map_keyboard(pass_map),
+    )
+
+
+async def show_user_main(callback: CallbackQuery) -> None:
+    await show_user_pass_page(callback, 1)
 
 
 async def show_admin_main(callback: CallbackQuery) -> None:
@@ -258,17 +281,28 @@ async def hockey_pass_button(message: Message, state: FSMContext) -> None:
         await send_clean_message(message, ADMIN_HPASS_MAIN_TEXT, reply_markup=build_admin_hockey_pass_main_keyboard())
         return
 
-    info = await get_user_hockey_pass_info(message.from_user.id)
-    if info is None:
+    pass_map = await get_user_hockey_pass_map(message.from_user.id, page=1)
+    if pass_map is None:
         await message.answer("🎟 Открой игру через /start.")
         return
-    await send_clean_message(message, build_user_hockey_pass_text(info), reply_markup=build_user_hockey_pass_keyboard(info))
+    await send_clean_message(
+        message,
+        build_user_hockey_pass_map_text(pass_map),
+        reply_markup=build_user_hockey_pass_map_keyboard(pass_map),
+    )
 
 
 @router.callback_query(F.data == "hpass:main")
 async def user_hpass_main(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await show_user_main(callback)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("hpass:levels:"))
+async def user_hpass_levels(callback: CallbackQuery) -> None:
+    page = int((callback.data or "").split(":")[-1])
+    await show_user_pass_page(callback, page)
     await callback.answer()
 
 
@@ -311,6 +345,25 @@ async def user_hpass_claim(callback: CallbackQuery) -> None:
     await callback.answer("Награда получена")
 
 
+@router.callback_query(F.data.startswith("hpass:level_claim:"))
+async def user_hpass_level_claim(callback: CallbackQuery) -> None:
+    _, _, reward_id, page = (callback.data or "").split(":")
+    result, error = await claim_reward(callback.from_user.id, int(reward_id))
+    if error or result is None:
+        await callback.answer(error or "Награда недоступна.", show_alert=True)
+        return
+    pass_map = await get_user_hockey_pass_map(callback.from_user.id, page=int(page))
+    if pass_map is None:
+        await callback.answer("Награда получена")
+        return
+    await edit_or_send(
+        callback,
+        build_user_hockey_pass_map_text(pass_map),
+        reply_markup=build_user_hockey_pass_map_keyboard(pass_map),
+    )
+    await callback.answer("🎁 Награда получена")
+
+
 @router.callback_query(F.data == "hpass:buy_ask")
 async def user_hpass_buy_ask(callback: CallbackQuery) -> None:
     info = await get_user_hockey_pass_info(callback.from_user.id)
@@ -330,8 +383,16 @@ async def user_hpass_buy(callback: CallbackQuery) -> None:
     if error or result is None:
         await callback.answer(error or "Premium пока недоступен.", show_alert=True)
         return
-    info = await get_user_hockey_pass_info(callback.from_user.id)
-    await edit_or_send(callback, build_premium_purchase_result_text(result), reply_markup=build_user_hockey_pass_keyboard(info))
+    pass_map = await get_user_hockey_pass_map(callback.from_user.id, page=1)
+    if pass_map is not None:
+        await edit_or_send(
+            callback,
+            build_user_hockey_pass_map_text(pass_map),
+            reply_markup=build_user_hockey_pass_map_keyboard(pass_map),
+        )
+    else:
+        info = await get_user_hockey_pass_info(callback.from_user.id)
+        await edit_or_send(callback, build_premium_purchase_result_text(result), reply_markup=build_user_hockey_pass_keyboard(info))
     await callback.answer("Premium открыт")
 
 
@@ -401,7 +462,6 @@ async def admin_hpass_create_end(message: Message, state: FSMContext) -> None:
 
 
 async def edit_or_send_fake_prompt(message: Message, state: FSMContext, text: str, reply_markup=None) -> None:
-    await state.update_data(prompt_message_id=None)
     await send_prompt(message, state, text, reply_markup=reply_markup)
 
 
@@ -439,13 +499,20 @@ async def admin_hpass_create_price_amount(message: Message, state: FSMContext) -
 
 @router.callback_query(F.data == "admin_hpass:create_confirm")
 async def admin_hpass_create_confirm(callback: CallbackQuery, state: FSMContext) -> None:
-    await clear_prompt_from_state(callback, state)
     data = await state.get_data()
     if not {"title", "end_at"}.issubset(data):
-        await callback.answer("Данные не найдены.", show_alert=True)
+        await callback.answer("Обнови раздел и создай Pass заново.", show_alert=True)
         return
-    draft = HockeyPassDraft(data["title"], data.get("description", ""), data["end_at"], data.get("premium_currency_code"), int(data.get("premium_price_amount", 0)))
+
+    draft = HockeyPassDraft(
+        data["title"],
+        data.get("description", ""),
+        data["end_at"],
+        data.get("premium_currency_code"),
+        int(data.get("premium_price_amount", 0)),
+    )
     pass_id = await create_pass(draft)
+    await clear_admin_step(callback, state)
     await state.clear()
     await callback.answer(ADMIN_HPASS_SAVED_TEXT)
     await show_admin_pass_profile(callback, pass_id, 1)
@@ -813,21 +880,34 @@ def build_reward_draft_from_state(data: dict) -> RewardDraft:
 
 @router.callback_query(F.data == "admin_hpass:reward_confirm")
 async def admin_hpass_reward_confirm(callback: CallbackQuery, state: FSMContext) -> None:
-    await clear_prompt_from_state(callback, state)
     data = await state.get_data()
     try:
         draft = build_reward_draft_from_state(data)
-    except KeyError:
-        await callback.answer("Данные награды не найдены.", show_alert=True)
+    except (KeyError, TypeError, ValueError):
+        await callback.answer("Обнови раздел и добавь награду заново.", show_alert=True)
         return
+
+    if await get_pass_profile(draft.pass_id) is None:
+        await callback.answer("Обнови раздел и выбери Pass заново.", show_alert=True)
+        return
+
     if data.get("replace_reward_id"):
-        await replace_reward_payload(draft, int(data["replace_reward_id"]))
         reward_id = int(data["replace_reward_id"])
+        saved = await replace_reward_payload(draft, reward_id)
+        if not saved:
+            await callback.answer("Обнови раздел и выбери награду заново.", show_alert=True)
+            return
     else:
-        reward_id = await create_reward(draft)
+        created_reward_id = await create_reward(draft)
+        if created_reward_id is None:
+            await callback.answer("Обнови раздел и выбери Pass заново.", show_alert=True)
+            return
+        reward_id = int(created_reward_id)
+
+    await clear_admin_step(callback, state)
     await state.clear()
     await callback.answer(ADMIN_HPASS_REWARD_SAVED_TEXT)
-    await show_admin_reward_profile(callback, int(reward_id), 1)
+    await show_admin_reward_profile(callback, reward_id, 1)
 
 
 @router.callback_query(F.data.startswith("admin_hpass:reward_toggle:"))

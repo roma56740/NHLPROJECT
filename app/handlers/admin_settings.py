@@ -28,6 +28,8 @@ router = Router()
 ADMIN_SETTINGS_BUTTON_TEXT = "⚙️ Настройки"
 NUMBER_SETTINGS = {
     "win_coins_reward",
+    "loss_coins_reward",
+    "bot_handicap_extra",
     "matchmaking_min_wait_seconds",
     "matchmaking_max_wait_seconds",
     "start_coins",

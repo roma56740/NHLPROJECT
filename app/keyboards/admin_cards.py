@@ -10,6 +10,7 @@ def build_admin_cards_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="➕ Добавить карточку", callback_data="admin_cards:add")],
+            [InlineKeyboardButton(text="📥 Массовое добавление", callback_data="bulk_cards:start")],
             [InlineKeyboardButton(text="📋 Все карточки", callback_data="admin_cards:list:1")],
             [InlineKeyboardButton(text="🔎 Найти карточку", callback_data="admin_cards:search")],
             [InlineKeyboardButton(text="🗂 Коллекции", callback_data="admin_cards:collections")],
@@ -129,6 +130,7 @@ def build_admin_card_edit_keyboard(card_id: int, page: int) -> InlineKeyboardMar
             [InlineKeyboardButton(text="🌍 Страна", callback_data=f"admin_cards:edit_text:{card_id}:{page}:country")],
             [InlineKeyboardButton(text="🗂 Коллекция", callback_data=f"admin_cards:edit_text:{card_id}:{page}:collection")],
             [InlineKeyboardButton(text="💎 Редкость", callback_data=f"admin_cards:edit_rarity:{card_id}:{page}")],
+            [InlineKeyboardButton(text="💵 Зарплата", callback_data=f"admin_cards:edit_text:{card_id}:{page}:salary")],
             [InlineKeyboardButton(text="🖼 Заменить фото", callback_data=f"admin_cards:edit_image:{card_id}:{page}")],
             [InlineKeyboardButton(text="👁 К карточке", callback_data=f"admin_cards:view:{card_id}:{page}")],
         ]
