@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.database.db import DATABASE_PATH, get_connection
 from app.texts.admin_panel import AdminListItem, AdminSummary
+from app.services.admin_permissions import ADMIN_ROLE_OWNER, ADMIN_ROLE_SENIOR, ADMIN_ROLE_CONTENT, get_admin_role_title, normalize_admin_role
 from config import settings
 
 EXPORTS_DIR = Path("data/exports")
@@ -52,7 +53,13 @@ async def get_admin_summary() -> AdminSummary:
 async def list_active_admins() -> list[AdminListItem]:
     main_admin_ids = set(settings.admin_ids)
     admins: list[AdminListItem] = [
-        AdminListItem(telegram_id=telegram_id, source="main", active=True)
+        AdminListItem(
+            telegram_id=telegram_id,
+            source="main",
+            active=True,
+            role=ADMIN_ROLE_OWNER,
+            role_title=get_admin_role_title(ADMIN_ROLE_OWNER),
+        )
         for telegram_id in sorted(main_admin_ids)
     ]
 
@@ -62,7 +69,7 @@ async def list_active_admins() -> list[AdminListItem]:
 
         rows = connection.execute(
             """
-            SELECT telegram_id, active, created_at
+            SELECT telegram_id, active, role, created_at
             FROM bot_admins
             WHERE active = 1
             ORDER BY created_at DESC, telegram_id ASC
@@ -73,11 +80,14 @@ async def list_active_admins() -> list[AdminListItem]:
         telegram_id = int(row["telegram_id"])
         if telegram_id in main_admin_ids:
             continue
+        role = normalize_admin_role(row["role"] if "role" in row.keys() else ADMIN_ROLE_SENIOR)
         admins.append(
             AdminListItem(
                 telegram_id=telegram_id,
                 source="panel",
                 active=bool(row["active"]),
+                role=role,
+                role_title=get_admin_role_title(role),
                 added_at=row["created_at"],
             )
         )
@@ -85,20 +95,42 @@ async def list_active_admins() -> list[AdminListItem]:
     return admins
 
 
-async def add_admin(telegram_id: int, added_by_telegram_id: int | None) -> None:
+async def add_admin(telegram_id: int, added_by_telegram_id: int | None, role: str = ADMIN_ROLE_CONTENT) -> None:
+    role = normalize_admin_role(role)
     with get_connection() as connection:
         connection.execute(
             """
-            INSERT INTO bot_admins (telegram_id, added_by_telegram_id, active)
-            VALUES (?, ?, 1)
+            INSERT INTO bot_admins (telegram_id, added_by_telegram_id, role, active)
+            VALUES (?, ?, ?, 1)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 active = 1,
+                role = excluded.role,
                 added_by_telegram_id = excluded.added_by_telegram_id,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (telegram_id, added_by_telegram_id),
+            (telegram_id, added_by_telegram_id, role),
         )
         connection.commit()
+
+
+async def update_admin_role(telegram_id: int, role: str) -> bool:
+    if telegram_id in set(settings.admin_ids):
+        return False
+
+    role = normalize_admin_role(role)
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE bot_admins
+            SET role = ?,
+                active = 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE telegram_id = ?
+            """,
+            (role, telegram_id),
+        )
+        connection.commit()
+        return cursor.rowcount > 0
 
 
 async def remove_admin(telegram_id: int) -> bool:

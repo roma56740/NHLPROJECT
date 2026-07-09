@@ -304,7 +304,7 @@ async def admin_cards_leave_to_admin_menu(message: Message, state: FSMContext) -
 
     sent_message = await message.answer(
         "🏒 Главное меню админ-панели\n\nВыбери нужный раздел ниже.",
-        reply_markup=build_admin_main_keyboard(),
+        reply_markup=build_admin_main_keyboard(user_id),
     )
     remember_admin_cards_message(user_id, sent_message)
 

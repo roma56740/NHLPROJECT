@@ -15,6 +15,7 @@ from app.keyboards.community import (
     build_clan_requests_keyboard,
     build_clan_requests_shortcut_keyboard,
     build_clan_member_manage_keyboard,
+    build_clan_member_stats_keyboard,
     build_clan_profile_keyboard,
     build_clans_list_keyboard,
     build_clans_main_keyboard,
@@ -51,6 +52,8 @@ from app.services.community import (
     get_available_user_cards_page,
     get_card_choices_page,
     get_clan_profile,
+    get_clan_war_player_rating,
+    get_clan_global_rating,
     get_clans_page,
     get_direct_trade_players_page,
     get_players_page,
@@ -615,6 +618,37 @@ async def clans_main(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+
+
+@router.callback_query(F.data == "community:clan_player_rating")
+async def clan_player_rating(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user_id = await get_current_user_id(callback)
+    profile = await get_user_clan(user_id) if user_id else None
+    if profile is None:
+        await callback.answer("Ты не состоишь в клане", show_alert=True)
+        return
+    rows = await get_clan_war_player_rating(profile.id)
+    lines = [f"🥇 <b>Вклад игроков — {escape(profile.name, quote=False)}</b>", "", "Победы, принесённые клану в активных клановых атаках:"]
+    for i, row in enumerate(rows, 1):
+        lines.append(f"{i}. <b>{escape(row['nickname'], quote=False)}</b> — {int(row['wins_contributed'])} побед")
+    await edit_or_send(callback, "\n".join(lines), reply_markup=build_clans_main_keyboard(has_clan=True))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "community:clan_global_rating")
+async def clan_global_rating(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user_id = await get_current_user_id(callback)
+    has_clan = bool(await get_user_clan(user_id)) if user_id else False
+    rows = await get_clan_global_rating()
+    lines = ["🏆 <b>Общий рейтинг кланов</b>", "", "Сортировка: рейтинг клана → победы игроков для клана."]
+    for i, row in enumerate(rows, 1):
+        lines.append(f"{i}. <b>{escape(row['name'], quote=False)}</b> — ⭐ {int(row['rating_points'])} • 🏒 {int(row['war_wins_contributed'])} побед")
+    await edit_or_send(callback, "\n".join(lines), reply_markup=build_clans_main_keyboard(has_clan=has_clan))
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("community:clan_list:"))
 async def clan_list(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -852,6 +886,30 @@ async def clan_member_view(callback: CallbackQuery, state: FSMContext) -> None:
         callback,
         build_clan_member_manage_text(member.nickname, member.role),
         reply_markup=build_clan_member_manage_keyboard(member.user_id, member.role, actor_role=profile.viewer_role),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("community:clan_member_stats:"))
+async def clan_member_stats(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user_id, profile = await get_actor_clan_context(callback)
+    if profile is None:
+        return
+    raw_id = callback.data.split(":")[-1] if callback.data else ""
+    member_user_id = int(raw_id) if raw_id.isdigit() else 0
+    member = next((item for item in profile.members if item.user_id == member_user_id), None)
+    if member is None:
+        await callback.answer("Игрок не найден в клане", show_alert=True)
+        return
+    player_profile = await get_public_player_profile(member_user_id, viewer_user_id=user_id)
+    if player_profile is None:
+        await callback.answer("Статистика игрока не найдена", show_alert=True)
+        return
+    await edit_or_send(
+        callback,
+        build_public_player_profile_text(player_profile),
+        reply_markup=build_clan_member_stats_keyboard(member_user_id),
     )
     await callback.answer()
 

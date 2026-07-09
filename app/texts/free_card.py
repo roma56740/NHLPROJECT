@@ -10,10 +10,24 @@ FREE_CARD_NOTIFICATION_TEXT = """
 """.strip()
 
 FREE_CARD_SET_COLLECTION_TEXT = """
-<b>🗂 Коллекция бесплатной карточки</b>
+<b>🗂 Заменить список коллекций</b>
 
 Отправь название, код или ID коллекции.
-Именно из неё игроки будут получать случайную карточку раз в 6 часов.
+Текущий список будет заменён одной выбранной коллекцией.
+""".strip()
+
+FREE_CARD_ADD_COLLECTION_TEXT = """
+<b>➕ Добавить коллекцию бесплатных карточек</b>
+
+Отправь название, код или ID коллекции.
+Она добавится в общий пул бесплатных карточек.
+""".strip()
+
+FREE_CARD_REMOVE_COLLECTION_TEXT = """
+<b>➖ Убрать коллекцию из бесплатных карточек</b>
+
+Отправь название, код или ID коллекции.
+Она удалится только из пула бесплатных карточек, сама коллекция и карты не удаляются.
 """.strip()
 
 FREE_CARD_COLLECTION_NOT_FOUND_TEXT = """
@@ -57,36 +71,38 @@ def format_remaining(seconds: int) -> str:
 
 
 def build_free_card_user_text(status) -> str:
-    if status.collection is None:
+    collections = list(getattr(status, "collections", []) or ([status.collection] if status.collection else []))
+    active_cards = sum(c.active_cards_count for c in collections if c and c.active)
+    collections_text = ", ".join(safe(c.name) for c in collections[:5])
+    if len(collections) > 5:
+        collections_text += f" и ещё {len(collections) - 5}"
+
+    if not collections:
         return """
 <b>🎁 Бесплатная карточка</b>
 
 Сейчас бесплатная карточка недоступна.
-Администрация лиги скоро выберет коллекцию для подарков.
+Администрация лиги скоро выберет коллекции для подарков.
 """.strip()
 
-    if not status.collection.active:
+    if active_cards <= 0:
         return f"""
 <b>🎁 Бесплатная карточка</b>
 
-Коллекция <b>{safe(status.collection.name)}</b> сейчас закрыта.
-Как только подарки снова появятся, здесь можно будет забрать карточку.
-""".strip()
+В выбранных коллекциях пока нет активных карточек.
+Коллекции: <b>{collections_text}</b>
 
-    if status.collection.active_cards_count <= 0:
-        return f"""
-<b>🎁 Бесплатная карточка</b>
-
-Коллекция <b>{safe(status.collection.name)}</b> пока пустая.
-Как только в ней появятся карточки, подарок станет доступен.
+Как только в них появятся карточки, подарок станет доступен.
 """.strip()
 
     if status.is_ready:
         return f"""
 <b>🎁 Бесплатная карточка готова!</b>
 
-Можно забрать 1 случайную карточку из коллекции:
-<b>{safe(status.collection.name)}</b>
+Можно забрать 1 случайную карточку из пула коллекций:
+<b>{collections_text}</b>
+
+🃏 Активных карточек в пуле: <b>{active_cards}</b>
 
 ⏳ Новая карточка доступна раз в <b>{status.cooldown_hours} ч.</b>
 """.strip()
@@ -94,8 +110,10 @@ def build_free_card_user_text(status) -> str:
     return f"""
 <b>🎁 Бесплатная карточка</b>
 
-Коллекция подарков:
-<b>{safe(status.collection.name)}</b>
+Пул подарков:
+<b>{collections_text}</b>
+
+🃏 Активных карточек в пуле: <b>{active_cards}</b>
 
 Следующая карточка будет доступна через:
 <b>{format_remaining(status.remaining_seconds)}</b>
@@ -103,28 +121,33 @@ def build_free_card_user_text(status) -> str:
 
 
 def build_free_card_admin_text(status) -> str:
-    collection_line = "не выбрана"
-    cards_line = "0"
-    status_line = "нужно выбрать коллекцию"
-
-    if status.collection is not None:
-        collection_line = f"{safe(status.collection.name)} <code>{safe(status.collection.code)}</code>"
-        cards_line = str(status.collection.active_cards_count)
-
-        if not status.collection.active:
-            status_line = "коллекция закрыта"
-        elif status.collection.active_cards_count <= 0:
-            status_line = "в коллекции пока нет активных карточек"
-        else:
-            status_line = "подарки доступны игрокам"
+    collections = list(getattr(status, "collections", []) or ([status.collection] if status.collection else []))
+    if not collections:
+        collections_block = "не выбраны"
+        total_cards = 0
+        status_line = "нужно добавить хотя бы одну коллекцию"
+    else:
+        lines = []
+        total_cards = 0
+        active_available = False
+        for collection in collections:
+            marker = "🟢" if collection.active else "🔴"
+            total_cards += collection.active_cards_count if collection.active else 0
+            if collection.active and collection.active_cards_count > 0:
+                active_available = True
+            lines.append(f"{marker} <b>{safe(collection.name)}</b> <code>{safe(collection.code)}</code> — {collection.active_cards_count} активных карт")
+        collections_block = "\n".join(lines)
+        status_line = "подарки доступны игрокам" if active_available else "нет активных карточек в выбранных коллекциях"
 
     return f"""
 <b>🎁 Бесплатная карточка</b>
 
-Здесь выбирается коллекция, из которой игроки получают случайную карточку раз в <b>{status.cooldown_hours} ч.</b>
+Теперь можно подключить сразу несколько коллекций. Игрок получает 1 случайную карточку из общего пула раз в <b>{status.cooldown_hours} ч.</b>
 
-🗂 Коллекция: <b>{collection_line}</b>
-🃏 Активных карточек: <b>{cards_line}</b>
+<b>Выбранные коллекции</b>
+{collections_block}
+
+🃏 Активных карточек в пуле: <b>{total_cards}</b>
 📌 Статус: <b>{status_line}</b>
 
 Игроки видят отдельную кнопку и могут сами проверить таймер.
@@ -134,12 +157,34 @@ def build_free_card_admin_text(status) -> str:
 
 def build_free_card_collection_saved_text(collection) -> str:
     return f"""
-<b>✅ Коллекция выбрана</b>
+<b>✅ Список заменён</b>
 
 Теперь бесплатные карточки будут выпадать из коллекции:
 <b>{safe(collection.name)}</b>
 
 Активных карточек внутри: <b>{collection.active_cards_count}</b>
+""".strip()
+
+
+def build_free_card_collection_added_text(collection) -> str:
+    return f"""
+<b>✅ Коллекция добавлена</b>
+
+В пул бесплатных карточек добавлена коллекция:
+<b>{safe(collection.name)}</b>
+
+Активных карточек внутри: <b>{collection.active_cards_count}</b>
+""".strip()
+
+
+def build_free_card_collection_removed_text(collection) -> str:
+    return f"""
+<b>✅ Коллекция убрана</b>
+
+Из пула бесплатных карточек убрана коллекция:
+<b>{safe(collection.name)}</b>
+
+Сама коллекция и карточки не удалялись.
 """.strip()
 
 
@@ -155,5 +200,5 @@ def build_free_card_reward_text(reward) -> str:
 🗂 Коллекция: <b>{safe(reward.collection_name)}</b>
 ✨ Редкость: <b>{safe(reward.rarity)}</b>
 
-Следующая бесплатная карточка будет доступна через <b>6 часов</b>.
+Следующая бесплатная карточка будет доступна по таймеру бесплатной карточки.
 """.strip()

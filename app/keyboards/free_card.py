@@ -28,7 +28,9 @@ def build_free_card_ready_keyboard() -> InlineKeyboardMarkup:
 def build_free_card_admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🗂 Выбрать коллекцию", callback_data="free_card:admin:set_collection")],
+            [InlineKeyboardButton(text="➕ Добавить коллекцию", callback_data="free_card:admin:add_collection")],
+            [InlineKeyboardButton(text="➖ Убрать коллекцию", callback_data="free_card:admin:remove_collection")],
+            [InlineKeyboardButton(text="🗂 Заменить список одной коллекцией", callback_data="free_card:admin:set_collection")],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data="free_card:admin")],
         ]
     )

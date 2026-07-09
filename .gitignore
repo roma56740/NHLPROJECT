@@ -16,3 +16,6 @@ assets/uploads/
 # IDE
 .idea/
 .vscode/
+*.sqlite
+*.sqlite3
+*.db

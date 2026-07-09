@@ -11,6 +11,8 @@ WARS_MAIN_TEXT = """
 ⚔️ Президент или вице-президент объявляет атаку на арену — у клана есть 24 часа.
 🏒 Каждая победа участника клана в матче приносит +1 очко атаки.
 🏰 Набрали нужное число побед — арена ваша.
+🛡 Если вашу арену атакуют, победы участников клана автоматически защищают арену и уменьшают прогресс атаки.
+⚖️ Анти-монополия: чем больше арен держит клан, тем сложнее ему захватывать новые; есть лимиты, щит после захвата и КД на повторный захват.
 💰 Пока арена под контролем клана, каждый участник получает ежедневный доход.
 
 Выбери арену ниже.
@@ -51,6 +53,9 @@ def build_arena_profile_text(arena: ArenaInfo, viewer_clan_id: int | None = None
         ]
     )
 
+    if arena.protected_until:
+        lines.append(f"🛡 Щит до: <b>{escape(arena.protected_until, quote=False)}</b>")
+
     if arena.description:
         lines.extend(["", escape(arena.description, quote=False)])
 
@@ -58,8 +63,10 @@ def build_arena_profile_text(arena: ArenaInfo, viewer_clan_id: int | None = None
         lines.append("\n<b>⚔️ Идут атаки</b>")
         for attack in arena.attacks:
             marker = " ← ваш клан" if viewer_clan_id is not None and attack.clan_id == viewer_clan_id else ""
+            defense = f" · 🛡 защита: {attack.defense_points}" if attack.defense_points else ""
             lines.append(
-                f"🏰 <b>{escape(attack.clan_name, quote=False)}</b> — {attack.points}/{arena.capture_wins_required} побед{marker}"
+                f"🏰 <b>{escape(attack.clan_name, quote=False)}</b> — {attack.effective_points}/{arena.capture_wins_required} чистых побед "
+                f"({attack.points} побед атаки{defense}){marker}"
             )
     elif not admin:
         lines.append(f"\n⚔️ Атак сейчас нет. Атака длится {ATTACK_DURATION_HOURS} часа.")

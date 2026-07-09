@@ -14,8 +14,8 @@ def tier_for_rank(rank: int) -> str | None:
         return "T3"
     if 4 <= rank <= 10:
         return "T4_10"
-    if 11 <= rank <= 50:
-        return "T11_50"
+    if 11 <= rank <= 25:
+        return "T11_25"
     return None
 
 
@@ -24,7 +24,7 @@ TIER_TITLES = {
     "T2": "🥈 2 место",
     "T3": "🥉 3 место",
     "T4_10": "4–10 места",
-    "T11_50": "11–50 места",
+    "T11_25": "11–25 места",
 }
 
 
@@ -68,7 +68,7 @@ def load_tiers(connection) -> dict[str, TierReward]:
 async def get_tiers() -> list[TierReward]:
     with get_connection() as connection:
         tiers = load_tiers(connection)
-    order = ["T1", "T2", "T3", "T4_10", "T11_50"]
+    order = ["T1", "T2", "T3", "T4_10", "T11_25"]
     return [tiers[k] for k in order if k in tiers]
 
 
@@ -82,6 +82,11 @@ async def update_tier_field(tier_key: str, field: str, value: object) -> tuple[b
             return False, "Нужно целое число."
         if value < 0 or value > 100000000:
             return False, "Значение вне диапазона."
+    if field == "pack_id":
+        try:
+            value = None if value in (None, "", 0, "0") else int(value)
+        except (TypeError, ValueError):
+            return False, "Нужно ID пака или 0, чтобы убрать пак."
     with get_connection() as connection:
         exists = connection.execute("SELECT tier_key FROM season_reward_tiers WHERE tier_key = ?", (tier_key,)).fetchone()
         if exists is None:
@@ -143,7 +148,7 @@ async def reset_season() -> SeasonResetResult:
 
         for index, player in enumerate(ranked):
             rank = index + 1
-            if rank <= 50:
+            if rank <= 25:
                 top_snapshot.append({"rank": rank, "nickname": player["nickname"], "points": int(player["rating_points"])})
 
             tier_key = tier_for_rank(rank)
@@ -165,7 +170,7 @@ async def reset_season() -> SeasonResetResult:
 
         rewards_summary = ", ".join(
             f"{TIER_TITLES.get(t.tier_key, t.tier_key)}: {t.coins} coins"
-            for t in [tiers[k] for k in ["T1", "T2", "T3", "T4_10", "T11_50"] if k in tiers]
+            for t in [tiers[k] for k in ["T1", "T2", "T3", "T4_10", "T11_25"] if k in tiers]
         )
 
         connection.execute(

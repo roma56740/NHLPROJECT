@@ -158,6 +158,9 @@ def build_clans_main_keyboard(has_clan: bool) -> InlineKeyboardMarkup:
     else:
         keyboard.append([InlineKeyboardButton(text="➕ Создать клан", callback_data="community:clan_create")])
     keyboard.append([InlineKeyboardButton(text="🏟 Войны кланов", callback_data="wars:main")])
+    keyboard.append([InlineKeyboardButton(text="🏆 Рейтинг кланов", callback_data="community:clan_global_rating")])
+    if has_clan:
+        keyboard.append([InlineKeyboardButton(text="🥇 Вклад игроков", callback_data="community:clan_player_rating")])
     keyboard.append([InlineKeyboardButton(text="📋 Все кланы", callback_data="community:clan_list:1")])
     keyboard.append([InlineKeyboardButton(text="🔎 Найти клан", callback_data="community:clan_search")])
     keyboard.append([InlineKeyboardButton(text="🤝 Сообщество", callback_data="community:main")])
@@ -246,6 +249,8 @@ def build_clan_manage_keyboard(members, actor_user_id: int, actor_role: str, pen
 def build_clan_member_manage_keyboard(member_user_id: int, member_role: str, actor_role: str) -> InlineKeyboardMarkup:
     keyboard = []
 
+    keyboard.append([InlineKeyboardButton(text="📊 Статистика игрока", callback_data=f"community:clan_member_stats:{member_user_id}")])
+
     if actor_role == "leader":
         vice_text = "🥈 Снять вице-президента" if member_role == "officer" else "🥈 Назначить вице-президентом"
         keyboard.append([InlineKeyboardButton(text=vice_text, callback_data=f"community:clan_vice:{member_user_id}")])
@@ -279,3 +284,12 @@ def build_clan_requests_keyboard(requests) -> InlineKeyboardMarkup:
 def build_clan_requests_shortcut_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 Открыть заявки", callback_data="community:clan_requests")]])
 
+
+
+def build_clan_member_stats_keyboard(member_user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ К игроку клана", callback_data=f"community:clan_member:{member_user_id}")],
+            [InlineKeyboardButton(text="⬅️ К составу", callback_data="community:clan_manage")],
+        ]
+    )

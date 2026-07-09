@@ -5,6 +5,15 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from app.services.settings import is_maintenance_mode_enabled
+from app.services.subscription import (
+    SUBSCRIPTION_CHECK_CALLBACK,
+    build_subscription_keyboard,
+    build_subscription_text,
+    get_start_banner_file,
+    get_subscription_settings,
+    is_user_subscribed,
+    normalize_channel_id,
+)
 from app.services.users import is_player_banned
 from app.utils.messages import safe_delete_message
 from app.utils.users import is_admin
@@ -57,16 +66,41 @@ class BannedPlayerMiddleware(BaseMiddleware):
 
             return None
 
-        if not await is_player_banned(telegram_user.id):
+        if await is_player_banned(telegram_user.id):
+            if isinstance(event, Message):
+                await safe_delete_message(event)
+                await event.answer(BANNED_PLAYER_TEXT)
+                return None
+
+            if isinstance(event, CallbackQuery):
+                await event.answer(BANNED_PLAYER_ALERT, show_alert=True)
+                return None
+
+            return None
+
+        if isinstance(event, CallbackQuery) and event.data == SUBSCRIPTION_CHECK_CALLBACK:
             return await handler(event, data)
 
-        if isinstance(event, Message):
-            await safe_delete_message(event)
-            await event.answer(BANNED_PLAYER_TEXT)
+        subscription_settings = await get_subscription_settings()
+        bot = data.get("bot")
+        channel_is_configured = bool(normalize_channel_id(subscription_settings.channel_id))
+        if subscription_settings.enabled and channel_is_configured and bot is not None and not await is_user_subscribed(bot, telegram_user.id):
+            if isinstance(event, Message):
+                await safe_delete_message(event)
+                banner = get_start_banner_file(subscription_settings)
+                text = build_subscription_text(subscription_settings)
+                keyboard = build_subscription_keyboard(subscription_settings)
+
+                if banner is not None:
+                    await event.answer_photo(photo=banner, caption=text, reply_markup=keyboard)
+                else:
+                    await event.answer(text, reply_markup=keyboard)
+                return None
+
+            if isinstance(event, CallbackQuery):
+                await event.answer("Сначала подпишись на канал лиги.", show_alert=True)
+                return None
+
             return None
 
-        if isinstance(event, CallbackQuery):
-            await event.answer(BANNED_PLAYER_ALERT, show_alert=True)
-            return None
-
-        return None
+        return await handler(event, data)

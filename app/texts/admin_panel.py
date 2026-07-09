@@ -21,6 +21,8 @@ class AdminListItem:
     telegram_id: int
     source: str
     active: bool
+    role: str = "senior_admin"
+    role_title: str = "⭐ Старший админ"
     added_at: str | None = None
 
 
@@ -47,7 +49,7 @@ ADMIN_PANEL_TEXT = """
 ADMINS_TEXT = """
 <b>👑 Админы</b>
 
-Здесь можно добавить нового администратора по Telegram ID или убрать доступ, выданный через панель.
+Здесь можно добавить администратора, убрать доступ или изменить уровень доступа.
 
 <b>Текущие админы</b>
 {admins}
@@ -71,7 +73,7 @@ ADMIN_ADD_PROMPT_TEXT = """
 
 Отправь Telegram ID нового администратора одним сообщением.
 
-После добавления бот попробует отправить ему уведомление.
+После этого выбери уровень доступа. Для загрузчиков карт обычно ставь «Контент-админ».
 """.strip()
 
 
@@ -81,6 +83,22 @@ ADMIN_REMOVE_PROMPT_TEXT = """
 Отправь Telegram ID администратора, которому нужно закрыть доступ через панель.
 """.strip()
 
+
+
+ADMIN_ROLE_PROMPT_TEXT = """
+<b>🎚 Выбери уровень админа</b>
+
+Контент-админ может загружать и редактировать карты, паки, дивизионы, картинки, зарплаты и химию, но не может трогать пользователей, валюты, базу и выдачу админки.
+""".strip()
+
+ADMIN_CHANGE_ROLE_PROMPT_TEXT = """
+<b>🎚 Изменить уровень админа</b>
+
+Отправь Telegram ID администратора, которому нужно поменять уровень доступа.
+""".strip()
+
+ADMIN_ROLE_CHANGE_SUCCESS_TEXT = "✅ Уровень админа обновлён."
+ADMIN_ROLE_MAIN_DENIED_TEXT = "👑 Главному админу из .env нельзя менять уровень через панель."
 
 ADMIN_INPUT_CANCELLED_TEXT = "❌ Действие отменено."
 ADMIN_ID_ERROR_TEXT = "⚠️ Отправь только Telegram ID цифрами."
@@ -127,7 +145,7 @@ def build_admins_text(admins: list[AdminListItem]) -> str:
             marker = "👑" if admin.source == "main" else "⭐"
             status = "активен" if admin.active else "закрыт"
             source = "главный доступ" if admin.source == "main" else "добавлен через панель"
-            lines.append(f"{marker} <code>{admin.telegram_id}</code> — {source}, {status}")
+            lines.append(f"{marker} <code>{admin.telegram_id}</code> — {admin.role_title}, {source}, {status}")
         admins_text = "\n".join(lines)
 
     return ADMINS_TEXT.format(admins=admins_text)

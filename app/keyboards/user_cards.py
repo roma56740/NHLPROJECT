@@ -3,7 +3,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.services.user_cards import PlayerCardListItem
 
 
-USER_CARDS_PER_PAGE = 5
+USER_CARDS_PER_PAGE = 8
 RARITIES = ["Common", "Rare", "Epic", "Legendary", "Event", "Icon"]
 POSITIONS = ["G", "D", "F"]
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from app.database.db import get_connection
+from app.services.settings import get_int_setting
 
 ATTACK_DURATION_HOURS = 24
 INCOME_PERIOD_HOURS = 24
@@ -17,6 +18,8 @@ class ArenaAttackInfo:
     clan_id: int
     clan_name: str
     points: int
+    defense_points: int
+    effective_points: int
     expires_at: str
 
 
@@ -38,6 +41,7 @@ class ArenaInfo:
     holder_clan_id: int | None
     holder_clan_name: str | None
     captured_at: str | None
+    protected_until: str | None
     attacks: list[ArenaAttackInfo]
 
 
@@ -86,6 +90,7 @@ def row_to_arena(row, attacks: list[ArenaAttackInfo]) -> ArenaInfo:
         holder_clan_id=row["holder_clan_id"],
         holder_clan_name=row["holder_clan_name"],
         captured_at=row["captured_at"],
+        protected_until=row["protected_until"] if "protected_until" in row.keys() else None,
         attacks=attacks,
     )
 
@@ -109,7 +114,7 @@ def fetch_arena_attacks(connection, arena_id: int) -> list[ArenaAttackInfo]:
     rows = connection.execute(
         """
         SELECT clan_arena_attacks.id, clan_arena_attacks.clan_id, clans.name AS clan_name,
-               clan_arena_attacks.points, clan_arena_attacks.expires_at
+               clan_arena_attacks.points, clan_arena_attacks.defense_points, clan_arena_attacks.effective_points, clan_arena_attacks.expires_at
         FROM clan_arena_attacks
         JOIN clans ON clans.id = clan_arena_attacks.clan_id
         WHERE clan_arena_attacks.arena_id = ? AND clan_arena_attacks.status = 'active'
@@ -123,6 +128,8 @@ def fetch_arena_attacks(connection, arena_id: int) -> list[ArenaAttackInfo]:
             clan_id=int(row["clan_id"]),
             clan_name=row["clan_name"],
             points=int(row["points"]),
+            defense_points=int(row["defense_points"] or 0),
+            effective_points=int(row["effective_points"] or 0),
             expires_at=row["expires_at"],
         )
         for row in rows
@@ -175,7 +182,7 @@ async def declare_attack(actor_user_id: int, arena_id: int) -> WarActionResult:
         clan_id = int(member["clan_id"])
 
         arena = connection.execute(
-            "SELECT id, name, active, holder_clan_id FROM clan_arenas WHERE id = ?",
+            "SELECT id, name, active, holder_clan_id, last_holder_clan_id, captured_at, protected_until FROM clan_arenas WHERE id = ?",
             (arena_id,),
         ).fetchone()
         if arena is None or not int(arena["active"]):
@@ -183,7 +190,27 @@ async def declare_attack(actor_user_id: int, arena_id: int) -> WarActionResult:
             return WarActionResult(False, "Арена недоступна", "Эта арена закрыта или удалена.")
         if arena["holder_clan_id"] is not None and int(arena["holder_clan_id"]) == clan_id:
             connection.rollback()
-            return WarActionResult(False, "Арена уже ваша", "Клан уже удерживает эту арену.")
+            return WarActionResult(False, "Арена уже ваша", "Клан уже удерживает эту арену. Защита включается автоматически: победы участников уменьшают прогресс атакующих.")
+
+        shield_until = parse_dt(arena["protected_until"] if "protected_until" in arena.keys() else None)
+        if shield_until is not None and shield_until > now:
+            connection.rollback()
+            return WarActionResult(False, "Арена под щитом", f"После захвата арену нельзя атаковать до {format_dt(shield_until)}.")
+
+        max_owned = await get_int_setting("clan_war_max_owned_arenas", 3, minimum=0, maximum=50)
+        if max_owned > 0:
+            owned_count = int(connection.execute("SELECT COUNT(*) AS c FROM clan_arenas WHERE holder_clan_id = ?", (clan_id,)).fetchone()["c"] or 0)
+            if owned_count >= max_owned:
+                connection.rollback()
+                return WarActionResult(False, "Лимит арен", f"Клан уже держит максимум арен: {max_owned}. Это ограничение не даёт одному клану стать вечным лидером.")
+
+        cooldown_hours = await get_int_setting("clan_war_same_arena_cooldown_hours", 24, minimum=0, maximum=720)
+        captured_at = parse_dt(arena["captured_at"] if "captured_at" in arena.keys() else None)
+        if cooldown_hours > 0 and arena["last_holder_clan_id"] is not None and int(arena["last_holder_clan_id"]) == clan_id and captured_at is not None:
+            until = captured_at + timedelta(hours=cooldown_hours)
+            if until > now:
+                connection.rollback()
+                return WarActionResult(False, "КД на повторный захват", f"Этот клан недавно потерял арену и сможет атаковать её после {format_dt(until)}.")
 
         active_attack = connection.execute(
             "SELECT id FROM clan_arena_attacks WHERE clan_id = ? AND status = 'active' LIMIT 1",
@@ -193,11 +220,15 @@ async def declare_attack(actor_user_id: int, arena_id: int) -> WarActionResult:
             connection.rollback()
             return WarActionResult(False, "Атака уже идёт", "Клан может вести только одну атаку одновременно. Дождись её завершения.")
 
+        owned_count = int(connection.execute("SELECT COUNT(*) AS c FROM clan_arenas WHERE holder_clan_id = ?", (clan_id,)).fetchone()["c"] or 0)
+        extra_per_arena = await get_int_setting("clan_war_leader_capture_extra_wins", 2, minimum=0, maximum=50)
+        effective_required = int(arena["capture_wins_required"] or 0) + owned_count * extra_per_arena
+
         expires_at = format_dt(now + timedelta(hours=ATTACK_DURATION_HOURS))
         connection.execute(
             """
-            INSERT INTO clan_arena_attacks (arena_id, clan_id, started_by_user_id, points, status, started_at, expires_at)
-            VALUES (?, ?, ?, 0, 'active', ?, ?)
+            INSERT INTO clan_arena_attacks (arena_id, clan_id, started_by_user_id, points, defense_points, effective_points, status, started_at, expires_at)
+            VALUES (?, ?, ?, 0, 0, 0, 'active', ?, ?)
             """,
             (arena_id, clan_id, actor_user_id, format_dt(now), expires_at),
         )
@@ -206,7 +237,7 @@ async def declare_attack(actor_user_id: int, arena_id: int) -> WarActionResult:
     return WarActionResult(
         True,
         "Атака объявлена",
-        f"У клана есть {ATTACK_DURATION_HOURS} часа. Каждая победа участника в матче приближает захват арены.",
+        f"У клана есть {ATTACK_DURATION_HOURS} часа. Каждая победа участника в матче приближает захват арены. Если у клана уже есть арены, для захвата нужно больше побед: действует анти-монополия.",
     )
 
 
@@ -233,8 +264,15 @@ def pay_clan_members(connection, clan_id: int, currency_code: str, amount: int) 
 
 
 async def apply_clan_war_win(user_id: int) -> None:
-    """Вызывается после победы игрока в матче: +1 очко активной атаке его клана."""
+    """Вызывается после победы игрока в матче.
+
+    Если клан атакует арену — победа прибавляет прогресс атаки.
+    Если клан защищает свою арену — победа уменьшает прогресс атакующего клана.
+    """
     now = utc_now()
+    defense_power = await get_int_setting("clan_war_defense_win_power", 1, minimum=1, maximum=25)
+    leader_extra = await get_int_setting("clan_war_leader_capture_extra_wins", 2, minimum=0, maximum=50)
+    shield_hours = await get_int_setting("clan_war_capture_shield_hours", 6, minimum=0, maximum=720)
 
     with get_connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -247,17 +285,60 @@ async def apply_clan_war_win(user_id: int) -> None:
             connection.rollback()
             return
 
+        clan_id = int(member["clan_id"])
+
+        # 1) Защита: если на арену клана идёт атака, победы владельца сбивают прогресс атакующих.
+        defense = connection.execute(
+            """
+            SELECT a.id, a.points, a.defense_points, a.effective_points, a.expires_at,
+                   ar.id AS arena_id, ar.name AS arena_name
+            FROM clan_arena_attacks a
+            JOIN clan_arenas ar ON ar.id = a.arena_id
+            WHERE ar.holder_clan_id = ? AND a.status = 'active' AND a.clan_id != ?
+            ORDER BY a.points DESC, a.started_at ASC
+            LIMIT 1
+            """,
+            (clan_id, clan_id),
+        ).fetchone()
+        if defense is not None:
+            expires_dt = parse_dt(defense["expires_at"])
+            if expires_dt is not None and expires_dt <= now:
+                connection.rollback()
+                return
+            new_defense = int(defense["defense_points"] or 0) + defense_power
+            new_effective = max(0, int(defense["points"] or 0) - new_defense)
+            connection.execute(
+                "UPDATE clan_arena_attacks SET defense_points = ?, effective_points = ? WHERE id = ?",
+                (new_defense, new_effective, int(defense["id"])),
+            )
+            # Защитные победы тоже пишем в личный вклад клана, но отдельно от атакующих побед.
+            connection.execute(
+                """
+                INSERT INTO clan_war_player_stats (clan_id, user_id, wins_contributed)
+                VALUES (?, ?, 1)
+                ON CONFLICT(clan_id, user_id) DO UPDATE SET
+                    wins_contributed = wins_contributed + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (clan_id, user_id),
+            )
+            connection.commit()
+            return
+
+        # 2) Атака: обычный прогресс активной атаки клана.
         attack = connection.execute(
             """
             SELECT clan_arena_attacks.id, clan_arena_attacks.arena_id, clan_arena_attacks.points,
+                   clan_arena_attacks.defense_points, clan_arena_attacks.effective_points,
                    clan_arena_attacks.expires_at,
-                   clan_arenas.capture_wins_required, clan_arenas.capture_currency_code, clan_arenas.capture_amount
+                   clan_arenas.capture_wins_required, clan_arenas.capture_currency_code, clan_arenas.capture_amount,
+                   clan_arenas.holder_clan_id
             FROM clan_arena_attacks
             JOIN clan_arenas ON clan_arenas.id = clan_arena_attacks.arena_id
             WHERE clan_arena_attacks.clan_id = ? AND clan_arena_attacks.status = 'active'
             LIMIT 1
             """,
-            (int(member["clan_id"]),),
+            (clan_id,),
         ).fetchone()
         if attack is None:
             connection.rollback()
@@ -268,25 +349,38 @@ async def apply_clan_war_win(user_id: int) -> None:
             connection.rollback()
             return
 
-        new_points = int(attack["points"]) + 1
-        required = int(attack["capture_wins_required"])
+        connection.execute(
+            """
+            INSERT INTO clan_war_player_stats (clan_id, user_id, wins_contributed)
+            VALUES (?, ?, 1)
+            ON CONFLICT(clan_id, user_id) DO UPDATE SET
+                wins_contributed = wins_contributed + 1,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (clan_id, user_id),
+        )
 
-        if new_points < required:
+        owned_count = int(connection.execute("SELECT COUNT(*) AS c FROM clan_arenas WHERE holder_clan_id = ?", (clan_id,)).fetchone()["c"] or 0)
+        required = int(attack["capture_wins_required"]) + owned_count * leader_extra
+        new_points = int(attack["points"] or 0) + 1
+        new_effective = max(0, new_points - int(attack["defense_points"] or 0))
+
+        if new_effective < required:
             connection.execute(
-                "UPDATE clan_arena_attacks SET points = ? WHERE id = ?",
-                (new_points, int(attack["id"])),
+                "UPDATE clan_arena_attacks SET points = ?, effective_points = ? WHERE id = ?",
+                (new_points, new_effective, int(attack["id"])),
             )
             connection.commit()
             return
 
-        # Захват: закрываем все атаки на арену, меняем владельца, платим награду.
-        clan_id = int(member["clan_id"])
         arena_id = int(attack["arena_id"])
+        previous_holder_id = attack["holder_clan_id"]
         finished_at = format_dt(now)
+        protected_until = format_dt(now + timedelta(hours=shield_hours)) if shield_hours > 0 else None
 
         connection.execute(
-            "UPDATE clan_arena_attacks SET points = ?, status = 'won', finished_at = ? WHERE id = ?",
-            (new_points, finished_at, int(attack["id"])),
+            "UPDATE clan_arena_attacks SET points = ?, effective_points = ?, status = 'won', finished_at = ? WHERE id = ?",
+            (new_points, new_effective, finished_at, int(attack["id"])),
         )
         connection.execute(
             "UPDATE clan_arena_attacks SET status = 'failed', finished_at = ? WHERE arena_id = ? AND status = 'active'",
@@ -295,10 +389,10 @@ async def apply_clan_war_win(user_id: int) -> None:
         connection.execute(
             """
             UPDATE clan_arenas
-            SET holder_clan_id = ?, captured_at = ?, last_income_at = ?, updated_at = CURRENT_TIMESTAMP
+            SET holder_clan_id = ?, last_holder_clan_id = ?, captured_at = ?, last_income_at = ?, protected_until = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """,
-            (clan_id, finished_at, finished_at, arena_id),
+            (clan_id, previous_holder_id, finished_at, finished_at, protected_until, arena_id),
         )
 
         capture_currency = attack["capture_currency_code"]

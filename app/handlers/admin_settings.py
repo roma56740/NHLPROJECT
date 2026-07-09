@@ -35,6 +35,13 @@ NUMBER_SETTINGS = {
     "start_coins",
     "start_energy",
     "start_rank_points",
+    "free_card_cooldown_hours",
+    "creator_weekly_rewards_interval_hours",
+    "asset_warning_interval_hours",
+    "pack_animation_step_delay_ms",
+    "creator_weekly_rewards_enabled",
+    "asset_warning_enabled",
+    "subscription_required_enabled",
 }
 
 

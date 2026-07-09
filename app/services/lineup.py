@@ -168,7 +168,7 @@ async def get_lineup_overview(user_id: int) -> LineupOverview:
     final_overall = None
 
     if average_overall is not None:
-        final_overall = min(99, average_overall + chemistry_result.total_bonus)
+        final_overall = average_overall + chemistry_result.total_bonus
 
     return LineupOverview(
         slots=slots,

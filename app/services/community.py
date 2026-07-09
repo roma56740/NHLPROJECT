@@ -1535,3 +1535,34 @@ async def delete_clan(clan_id: int) -> CommunityActionResult:
         connection.execute("DELETE FROM clans WHERE id = ?", (clan_id,))
         connection.commit()
     return CommunityActionResult(True, "Клан расформирован", "Участники больше не состоят в этом клане.")
+
+
+async def get_clan_war_player_rating(clan_id: int, limit: int = 10):
+    with get_connection() as connection:
+        return connection.execute(
+            """
+            SELECT u.id AS user_id, u.nickname, u.username, COALESCE(s.wins_contributed, 0) AS wins_contributed
+            FROM clan_members cm
+            JOIN users u ON u.id = cm.user_id
+            LEFT JOIN clan_war_player_stats s ON s.clan_id = cm.clan_id AND s.user_id = cm.user_id
+            WHERE cm.clan_id = ?
+            ORDER BY wins_contributed DESC, u.nickname COLLATE NOCASE ASC
+            LIMIT ?
+            """, (clan_id, limit)
+        ).fetchall()
+
+
+async def get_clan_global_rating(limit: int = 50):
+    with get_connection() as connection:
+        return connection.execute(
+            """
+            SELECT c.id, c.name, c.rating_points, c.wins,
+                   COALESCE(SUM(s.wins_contributed), 0) AS war_wins_contributed
+            FROM clans c
+            LEFT JOIN clan_war_player_stats s ON s.clan_id = c.id
+            WHERE c.active = 1
+            GROUP BY c.id
+            ORDER BY c.rating_points DESC, war_wins_contributed DESC, c.wins DESC, c.id ASC
+            LIMIT ?
+            """, (limit,)
+        ).fetchall()

@@ -48,6 +48,7 @@ def build_season_tier_edit_keyboard(tier_key: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="🪙 Coins", callback_data=f"season:edit:{tier_key}:coins")],
             [InlineKeyboardButton(text="💵 Рубли", callback_data=f"season:edit:{tier_key}:rubles")],
+            [InlineKeyboardButton(text="🎁 ID пака", callback_data=f"season:edit:{tier_key}:pack_id")],
             [InlineKeyboardButton(text="⬅️ К наградам", callback_data="season:tiers")],
         ]
     )
@@ -120,7 +121,8 @@ async def season_tiers(callback: CallbackQuery, state: FSMContext) -> None:
     lines = ["<b>🎁 Награды по местам</b>", ""]
     for t in tiers:
         extra = f" + 💵 {t.rubles}" if t.rubles else ""
-        lines.append(f"{TIER_TITLES.get(t.tier_key, t.tier_key)}: 🪙 {format_num(t.coins)}{extra}")
+        pack = f" + 🎁 пак ID {t.pack_id}" if t.pack_id else ""
+        lines.append(f"{TIER_TITLES.get(t.tier_key, t.tier_key)}: 🪙 {format_num(t.coins)}{extra}{pack}")
     await edit_or_send(callback, "\n".join(lines), reply_markup=build_season_tiers_keyboard(tiers))
     await callback.answer()
 
@@ -152,8 +154,8 @@ async def season_edit(callback: CallbackQuery, state: FSMContext) -> None:
     tier_key, field = parts[2], parts[3]
     await state.set_state(SeasonTierStates.waiting_for_value)
     await state.update_data(tier_key=tier_key, field=field)
-    label = "Coins" if field == "coins" else "Рубли"
-    await edit_or_send(callback, f"Введи количество {label} для {TIER_TITLES.get(tier_key, tier_key)}.", reply_markup=build_season_tier_edit_keyboard(tier_key))
+    label = {"coins": "Coins", "rubles": "Рубли", "pack_id": "ID пака, 0 — убрать пак"}.get(field, field)
+    await edit_or_send(callback, f"Введи {label} для {TIER_TITLES.get(tier_key, tier_key)}.", reply_markup=build_season_tier_edit_keyboard(tier_key))
     await callback.answer()
 
 
@@ -176,7 +178,8 @@ async def season_edit_value(message: Message, state: FSMContext) -> None:
     lines = ["<b>🎁 Награды по местам</b>", ""]
     for t in tiers:
         extra = f" + 💵 {t.rubles}" if t.rubles else ""
-        lines.append(f"{TIER_TITLES.get(t.tier_key, t.tier_key)}: 🪙 {format_num(t.coins)}{extra}")
+        pack = f" + 🎁 пак ID {t.pack_id}" if t.pack_id else ""
+        lines.append(f"{TIER_TITLES.get(t.tier_key, t.tier_key)}: 🪙 {format_num(t.coins)}{extra}{pack}")
     await message.answer("\n".join(lines), reply_markup=build_season_tiers_keyboard(tiers))
 
 

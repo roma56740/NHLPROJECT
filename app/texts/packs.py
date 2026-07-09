@@ -254,11 +254,12 @@ def build_pack_opening_start_text(result: PackOpeningResult) -> str:
 🃏 Внутри: <b>{cards_count}</b> {cards_word}
 
 Сейчас начнётся раскрытие карточек.
-Сначала появится дивизион, затем команда, потом страна игрока.
+Сначала появится дивизион, затем команда, потом национальность игрока.
 """.strip()
 
 
-def build_pack_animation_division_text(result: PackOpeningResult, reward, index: int, total: int) -> str:
+def build_pack_animation_division_text(result: PackOpeningResult, reward, index: int, total: int, division_name: str | None = None) -> str:
+    division_title = division_name or getattr(reward, "division_name", None) or "Без дивизиона"
     return f"""
 <b>✨ Открытие пака</b>
 
@@ -267,14 +268,15 @@ def build_pack_animation_division_text(result: PackOpeningResult, reward, index:
 
 ┏━━━━━━━━━━━━━━━━━━━━┓
 ┃ 🏆 ДИВИЗИОН
-┃ <b>{safe(reward.collection_name)}</b>
+┃ <b>{safe(division_title)}</b>
 ┗━━━━━━━━━━━━━━━━━━━━┛
 
 Команда скоро появится...
 """.strip()
 
 
-def build_pack_animation_team_text(result: PackOpeningResult, reward, index: int, total: int) -> str:
+def build_pack_animation_team_text(result: PackOpeningResult, reward, index: int, total: int, division_name: str | None = None) -> str:
+    division_title = division_name or getattr(reward, "division_name", None) or "Без дивизиона"
     return f"""
 <b>✨ Открытие пака</b>
 
@@ -283,7 +285,7 @@ def build_pack_animation_team_text(result: PackOpeningResult, reward, index: int
 
 ┏━━━━━━━━━━━━━━━━━━━━┓
 ┃ 🏆 Дивизион
-┃ <b>{safe(reward.collection_name)}</b>
+┃ <b>{safe(division_title)}</b>
 ┣━━━━━━━━━━━━━━━━━━━━┫
 ┃ 🏒 КОМАНДА
 ┃ <b>{safe(reward.team)}</b>
@@ -293,7 +295,8 @@ def build_pack_animation_team_text(result: PackOpeningResult, reward, index: int
 """.strip()
 
 
-def build_pack_animation_country_text(result: PackOpeningResult, reward, index: int, total: int) -> str:
+def build_pack_animation_country_text(result: PackOpeningResult, reward, index: int, total: int, division_name: str | None = None) -> str:
+    division_title = division_name or getattr(reward, "division_name", None) or "Без дивизиона"
     return f"""
 <b>✨ Открытие пака</b>
 
@@ -302,12 +305,12 @@ def build_pack_animation_country_text(result: PackOpeningResult, reward, index: 
 
 ┏━━━━━━━━━━━━━━━━━━━━┓
 ┃ 🏆 Дивизион
-┃ <b>{safe(reward.collection_name)}</b>
+┃ <b>{safe(division_title)}</b>
 ┣━━━━━━━━━━━━━━━━━━━━┫
 ┃ 🏒 Команда
 ┃ <b>{safe(reward.team)}</b>
 ┣━━━━━━━━━━━━━━━━━━━━┫
-┃ 🌍 СТРАНА
+┃ 🌍 НАЦИОНАЛЬНОСТЬ
 ┃ <b>{safe(reward.country)}</b>
 ┗━━━━━━━━━━━━━━━━━━━━┛
 

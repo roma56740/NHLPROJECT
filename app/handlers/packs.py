@@ -26,6 +26,9 @@ from app.keyboards.packs import (
     build_user_pack_profile_keyboard,
     build_user_packs_main_keyboard,
 )
+from app.services.admin_divisions import resolve_pack_animation_media
+from app.services.settings import get_int_setting
+from app.services.renders import render_card_profile_image
 from app.services.packs import (
     PackDraft,
     add_card_to_pack,
@@ -392,8 +395,24 @@ async def prompt_from_callback(callback: CallbackQuery, state: FSMContext, text:
     await edit_or_send(callback, text, reply_markup=reply_markup)
 
 
-async def edit_animation_message(message: Message, text: str) -> Message:
+async def edit_animation_message(message: Message, text: str, image_path: str | None = None) -> Message:
+    media_path = Path(image_path) if image_path else None
+
+    if media_path and media_path.exists():
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return await message.bot.send_photo(
+            chat_id=message.chat.id,
+            photo=FSInputFile(media_path),
+            caption=text,
+        )
+
     try:
+        if message.photo:
+            await message.delete()
+            return await message.bot.send_message(chat_id=message.chat.id, text=text)
         await message.edit_text(text)
         return message
     except TelegramBadRequest:
@@ -418,42 +437,48 @@ async def show_pack_opening_result(callback: CallbackQuery, result) -> None:
         chat_id=message.chat.id,
         text=build_pack_opening_start_text(result),
     )
-    await sleep(0.8)
+    step_delay_ms = await get_int_setting("pack_animation_step_delay_ms", 900, minimum=200, maximum=5000)
+    step_delay = step_delay_ms / 1000
+    await sleep(min(step_delay, 1.2))
 
     total_rewards = len(result.rewards)
 
     for index, reward in enumerate(result.rewards, start=1):
-        animation_message = await edit_animation_message(
-            animation_message,
-            build_pack_animation_division_text(result, reward, index, total_rewards),
-        )
-        await sleep(0.9)
+        media = await resolve_pack_animation_media(reward.team, reward.country)
+        division_name = media.get("division_name") or "Без дивизиона"
 
         animation_message = await edit_animation_message(
             animation_message,
-            build_pack_animation_team_text(result, reward, index, total_rewards),
+            build_pack_animation_division_text(result, reward, index, total_rewards, division_name=division_name),
+            media.get("division_image"),
         )
-        await sleep(0.9)
+        await sleep(step_delay)
 
         animation_message = await edit_animation_message(
             animation_message,
-            build_pack_animation_country_text(result, reward, index, total_rewards),
+            build_pack_animation_team_text(result, reward, index, total_rewards, division_name=division_name),
+            media.get("team_image"),
         )
-        await sleep(0.9)
+        await sleep(step_delay)
+
+        animation_message = await edit_animation_message(
+            animation_message,
+            build_pack_animation_country_text(result, reward, index, total_rewards, division_name=division_name),
+            media.get("country_image"),
+        )
+        await sleep(step_delay)
+
+        try:
+            reward_visual = render_card_profile_image(reward, user_id=callback.from_user.id)
+        except Exception:
+            reward_visual = None
 
         animation_message = await edit_animation_message(
             animation_message,
             build_pack_animation_reveal_text(result, reward, index, total_rewards),
+            reward_visual.as_posix() if reward_visual is not None else reward.image_path,
         )
-        await sleep(0.6)
-
-        image_path = Path(reward.image_path) if reward.image_path else None
-        caption = build_pack_reward_caption(reward)
-
-        if image_path and image_path.exists():
-            await callback.bot.send_photo(chat_id=message.chat.id, photo=FSInputFile(image_path), caption=caption)
-        else:
-            await callback.bot.send_message(chat_id=message.chat.id, text=caption)
+        await sleep(max(0.5, step_delay / 2))
 
         await sleep(0.4)
 

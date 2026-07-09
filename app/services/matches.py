@@ -71,6 +71,8 @@ class MatchPlayResult:
     success: bool
     message: str
     match_id: int | None = None
+    user_id: int | None = None
+    opponent_user_id: int | None = None
     opponent_name: str = ""
     opponent_type: str = "bot"
     user_lineup_ovr: int = 0
@@ -201,7 +203,7 @@ async def compute_bot_opponent_ovr(user_ovr: int) -> int:
         handicap = random.randint(0, 4)
 
     extra = await get_int_setting("bot_handicap_extra", 0, minimum=0, maximum=20)
-    return clamp(user_ovr - handicap - extra, 45, 99)
+    return max(45, user_ovr - handicap - extra)
 
 
 def weighted_success(user_ovr: int, opponent_ovr: int) -> bool:
@@ -883,6 +885,8 @@ async def save_match_result(
         success=True,
         message="Матч завершён.",
         match_id=match_id,
+        user_id=profile.id,
+        opponent_user_id=opponent_user_id,
         opponent_name=opponent_name,
         opponent_type=opponent_type,
         user_lineup_ovr=user_ovr,

@@ -1,5 +1,7 @@
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
+from app.services.admin_permissions import allowed_admin_buttons_for_user
+
 
 USER_MAIN_BUTTONS: list[list[str]] = [
     ["🏒 Играть", "🧩 Состав"],
@@ -21,7 +23,9 @@ ADMIN_MAIN_BUTTONS: list[list[str]] = [
     ["🏆 Лиги и рейтинг"],
     ["🧪 Химия", "🎪 События"],
     ["💱 Валюты", "🤝 Кланы"],
-    ["🏟 Арены", "📅 Ежедневный вход"],
+    ["🏟 Арены", "🏒 Дивизионы"],
+    ["💵 Зарплаты", "🎁 Награды"],
+    ["📅 Ежедневный вход"],
     ["🎫 Промокоды", "⭐ Креаторы"],
     ["🔄 Сброс сезона"],
     ["🔁 Обмены", "🛡 Безопасность"],
@@ -44,11 +48,12 @@ def build_user_main_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def build_admin_main_keyboard() -> ReplyKeyboardMarkup:
+def build_admin_main_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
+    rows = allowed_admin_buttons_for_user(user_id, ADMIN_MAIN_BUTTONS) if user_id is not None else ADMIN_MAIN_BUTTONS
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=button) for button in row]
-            for row in ADMIN_MAIN_BUTTONS
+            for row in rows
         ],
         resize_keyboard=True,
         input_field_placeholder="Выберите раздел админ-панели",

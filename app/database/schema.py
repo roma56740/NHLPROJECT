@@ -90,6 +90,48 @@ DEFAULT_GAME_SETTINGS = [
         "description": "Из этой коллекции игроки получают бесплатную карточку раз в 6 часов.",
     },
     {
+        "key": "free_card_collection_codes",
+        "value": "free-cards",
+        "title": "Коллекции бесплатной карточки",
+        "description": "Список кодов коллекций через запятую. Бесплатная карточка выбирается случайно из всех указанных активных коллекций.",
+    },
+    {
+        "key": "clan_war_defense_win_power",
+        "value": "1",
+        "title": "Сила победы защиты арены",
+        "description": "На сколько очков победа клана-владельца уменьшает активную атаку на его арену.",
+    },
+    {
+        "key": "clan_war_capture_shield_hours",
+        "value": "6",
+        "title": "Щит после захвата арены",
+        "description": "Сколько часов арену нельзя атаковать после захвата. Защищает от мгновенного перезахвата.",
+    },
+    {
+        "key": "clan_war_max_owned_arenas",
+        "value": "3",
+        "title": "Максимум арен у клана",
+        "description": "Сколько арен один клан может держать одновременно. 0 — без лимита.",
+    },
+    {
+        "key": "clan_war_same_arena_cooldown_hours",
+        "value": "24",
+        "title": "КД на повторный захват арены",
+        "description": "Сколько часов старый владелец не может атаковать эту же арену после потери.",
+    },
+    {
+        "key": "clan_war_leader_capture_extra_wins",
+        "value": "2",
+        "title": "Анти-лидер: доп. победы",
+        "description": "Сколько дополнительных побед нужно клану, который уже держит арены. Применяется за каждую арену клана.",
+    },
+    {
+        "key": "clan_season_reset_password",
+        "value": "Ihbsn_3141592",
+        "title": "Пароль сброса кланового сезона",
+        "description": "Отдельный пароль главного админа для сброса кланового сезона.",
+    },
+    {
         "key": "free_card_cooldown_hours",
         "value": "6",
         "title": "Ожидание бесплатной карточки",
@@ -106,6 +148,168 @@ DEFAULT_GAME_SETTINGS = [
         "value": "0",
         "title": "Ослабление ботов",
         "description": "На сколько дополнительно снизить OVR ботов (0-20). Больше значение — слабее боты.",
+    },
+    {
+        "key": "creator_chat_invite_link",
+        "value": "",
+        "title": "Ссылка на чат креаторов",
+        "description": "Ссылка автоматически отправляется игроку после назначения официальным креатором.",
+    },
+    {
+        "key": "creator_weekly_rewards_enabled",
+        "value": "1",
+        "title": "Авто-недельные бонусы креаторов",
+        "description": "1 — автоматически начислять недельные бонусы креаторов в банк выдачи.",
+    },
+    {
+        "key": "creator_weekly_rewards_interval_hours",
+        "value": "168",
+        "title": "Интервал недельных бонусов креаторов",
+        "description": "Через сколько часов автоматически начислять недельные бонусы креаторам.",
+    },
+    {
+        "key": "creator_weekly_last_paid_at",
+        "value": "",
+        "title": "Последняя авто-выплата креаторов",
+        "description": "Служебная дата последнего автоматического начисления недельных бонусов.",
+    },
+    {
+        "key": "asset_warning_enabled",
+        "value": "1",
+        "title": "Авто-предупреждения по картинкам",
+        "description": "1 — каждые 2 часа отправлять админам список недостающих картинок и данных.",
+    },
+    {
+        "key": "asset_warning_interval_hours",
+        "value": "2",
+        "title": "Интервал предупреждений по картинкам",
+        "description": "Через сколько часов повторять предупреждение администраторам.",
+    },
+    {
+        "key": "asset_warning_last_sent_at",
+        "value": "",
+        "title": "Последнее предупреждение по картинкам",
+        "description": "Служебная дата последней рассылки предупреждения о недостающих данных.",
+    },
+    {
+        "key": "subscription_required_enabled",
+        "value": "0",
+        "title": "Обязательная подписка",
+        "description": "1 — игроки смогут пользоваться ботом только после подписки на Telegram-канал.",
+    },
+    {
+        "key": "subscription_channel_id",
+        "value": "",
+        "title": "Канал обязательной подписки",
+        "description": "Username канала (@channel или t.me/channel) либо числовой ID -100... . Бот должен быть добавлен в канал администратором.",
+    },
+    {
+        "key": "subscription_channel_url",
+        "value": "",
+        "title": "Ссылка на канал подписки",
+        "description": "Ссылка для кнопки подписки. Если оставить пустой и канал указан как @username, ссылка соберётся автоматически.",
+    },
+    {
+        "key": "start_banner_path",
+        "value": "assets/visual/start_banner.jpeg",
+        "title": "Картинка стартового сообщения",
+        "description": "Путь к картинке, которая отправляется вместе со стартовым сообщением /start.",
+    },
+    {
+        "key": "pack_animation_enabled",
+        "value": "1",
+        "title": "Анимация открытия паков",
+        "description": "1 — показывать этапы дивизион → команда → страна → карточка.",
+    },
+    {
+        "key": "pack_animation_step_delay_ms",
+        "value": "900",
+        "title": "Пауза между этапами анимации",
+        "description": "Задержка между сообщениями анимации открытия пака в миллисекундах.",
+    },
+]
+
+
+DEFAULT_CREATOR_LEVEL_SETTINGS = [
+    {
+        "level": 1,
+        "required_subscribers": 30,
+        "required_distributed_value": 0,
+        "welcome_coins": 250000,
+        "weekly_coins": 100000,
+        "weekly_elite_packs": 1,
+        "weekly_legendary_packs": 0,
+        "weekly_elite_pack_id": None,
+        "weekly_legendary_pack_id": None,
+        "promo_codes_weekly": 0,
+        "author_code_percent_bp": 0,
+        "exclusive_card_rating": 0,
+        "perks_text": "Закрытый чат креаторов.",
+        "personal_rewards_text": "Приоритет в списке официальных креаторов; отдельная отметка в розыгрышах.",
+    },
+    {
+        "level": 2,
+        "required_subscribers": 100,
+        "required_distributed_value": 500000,
+        "welcome_coins": 500000,
+        "weekly_coins": 250000,
+        "weekly_elite_packs": 1,
+        "weekly_legendary_packs": 0,
+        "weekly_elite_pack_id": None,
+        "weekly_legendary_pack_id": None,
+        "promo_codes_weekly": 3,
+        "author_code_percent_bp": 0,
+        "exclusive_card_rating": 0,
+        "perks_text": "Тег CREATOR в общем чате; возможность создать 3 промокода в неделю.",
+        "personal_rewards_text": "Ранний доступ к новым ивентам; отдельный бейдж в списке креаторов.",
+    },
+    {
+        "level": 3,
+        "required_subscribers": 200,
+        "required_distributed_value": 2000000,
+        "welcome_coins": 750000,
+        "weekly_coins": 350000,
+        "weekly_elite_packs": 0,
+        "weekly_legendary_packs": 1,
+        "weekly_elite_pack_id": None,
+        "weekly_legendary_pack_id": None,
+        "promo_codes_weekly": 5,
+        "author_code_percent_bp": 0,
+        "exclusive_card_rating": 0,
+        "perks_text": "5 промокодов в неделю; пометка креатора в профиле игры.",
+        "personal_rewards_text": "Личная витрина розыгрышей; приоритет на тест новых механик.",
+    },
+    {
+        "level": 4,
+        "required_subscribers": 300,
+        "required_distributed_value": 4000000,
+        "welcome_coins": 1000000,
+        "weekly_coins": 400000,
+        "weekly_elite_packs": 0,
+        "weekly_legendary_packs": 3,
+        "weekly_elite_pack_id": None,
+        "weekly_legendary_pack_id": None,
+        "promo_codes_weekly": 5,
+        "author_code_percent_bp": 150,
+        "exclusive_card_rating": 0,
+        "perks_text": "Личный код автора: 1.5% с покупок пользователей, у которых введён код автора.",
+        "personal_rewards_text": "Возможность запускать брендированный мини-ивент; отдельный приоритет в промо.",
+    },
+    {
+        "level": 5,
+        "required_subscribers": 400,
+        "required_distributed_value": 10000000,
+        "welcome_coins": 2000000,
+        "weekly_coins": 500000,
+        "weekly_elite_packs": 0,
+        "weekly_legendary_packs": 5,
+        "weekly_elite_pack_id": None,
+        "weekly_legendary_pack_id": None,
+        "promo_codes_weekly": 5,
+        "author_code_percent_bp": 150,
+        "exclusive_card_rating": 99,
+        "perks_text": "Возможность заказать эксклюзивную карту 99 OVR на любого незанятого игрока.",
+        "personal_rewards_text": "Именной сезонный квест; персональный дизайн эксклюзивной карты; отдельная роль топ-креатора.",
     },
 ]
 
@@ -146,6 +350,7 @@ CREATE TABLE IF NOT EXISTS bot_admins (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     telegram_id INTEGER NOT NULL UNIQUE,
     added_by_telegram_id INTEGER,
+    role TEXT NOT NULL DEFAULT 'senior_admin',
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -594,6 +799,19 @@ CREATE TABLE IF NOT EXISTS clans (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+"""
+
+CREATE_CLAN_WAR_PLAYER_STATS_TABLE = """
+CREATE TABLE IF NOT EXISTS clan_war_player_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    clan_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    wins_contributed INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(clan_id, user_id),
+    FOREIGN KEY (clan_id) REFERENCES clans(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 """
 
@@ -1086,7 +1304,7 @@ DEFAULT_SEASON_REWARD_TIERS = [
     ("T2", 300000, 0, None),
     ("T3", 200000, 0, None),
     ("T4_10", 100000, 0, None),
-    ("T11_50", 50000, 0, None),
+    ("T11_25", 50000, 0, None),
 ]
 
 
@@ -1190,6 +1408,106 @@ CREATE TABLE IF NOT EXISTS season_reward_tiers (
 );
 """
 
+CREATE_CLAN_SEASONS_TABLE = """
+CREATE TABLE IF NOT EXISTS clan_seasons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    number INTEGER NOT NULL,
+    ended_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    top_json TEXT NOT NULL DEFAULT '[]',
+    rewards_summary TEXT NOT NULL DEFAULT '',
+    clans_count INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+CREATE_CLAN_SEASON_REWARD_TIERS_TABLE = """
+CREATE TABLE IF NOT EXISTS clan_season_reward_tiers (
+    place INTEGER PRIMARY KEY CHECK(place BETWEEN 1 AND 5),
+    coins INTEGER NOT NULL DEFAULT 0,
+    rubles INTEGER NOT NULL DEFAULT 0,
+    pack_id INTEGER,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (pack_id) REFERENCES packs(id) ON DELETE SET NULL
+);
+"""
+
+DEFAULT_CLAN_SEASON_REWARD_TIERS = [
+    (1, 1000000, 0, None),
+    (2, 750000, 0, None),
+    (3, 500000, 0, None),
+    (4, 300000, 0, None),
+    (5, 200000, 0, None),
+]
+
+
+CREATE_CREATOR_LEVEL_SETTINGS_TABLE = """
+CREATE TABLE IF NOT EXISTS creator_level_settings (
+    level INTEGER PRIMARY KEY CHECK(level BETWEEN 1 AND 5),
+    required_subscribers INTEGER NOT NULL DEFAULT 0,
+    required_distributed_value INTEGER NOT NULL DEFAULT 0,
+    welcome_coins INTEGER NOT NULL DEFAULT 0,
+    weekly_coins INTEGER NOT NULL DEFAULT 0,
+    weekly_elite_packs INTEGER NOT NULL DEFAULT 0,
+    weekly_legendary_packs INTEGER NOT NULL DEFAULT 0,
+    weekly_elite_pack_id INTEGER,
+    weekly_legendary_pack_id INTEGER,
+    promo_codes_weekly INTEGER NOT NULL DEFAULT 0,
+    author_code_percent_bp INTEGER NOT NULL DEFAULT 0,
+    exclusive_card_rating INTEGER NOT NULL DEFAULT 0,
+    perks_text TEXT NOT NULL DEFAULT '',
+    personal_rewards_text TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (weekly_elite_pack_id) REFERENCES packs(id) ON DELETE SET NULL,
+    FOREIGN KEY (weekly_legendary_pack_id) REFERENCES packs(id) ON DELETE SET NULL
+);
+"""
+
+CREATE_CREATOR_BANK_ITEMS_TABLE = """
+CREATE TABLE IF NOT EXISTS creator_bank_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    item_type TEXT NOT NULL CHECK(item_type IN ('currency','pack','card')),
+    currency_code TEXT,
+    pack_id INTEGER,
+    user_card_id INTEGER,
+    quantity INTEGER NOT NULL DEFAULT 1,
+    value_per_unit INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK(status IN ('available','distributed','cancelled')) DEFAULT 'available',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (currency_code) REFERENCES currencies(code) ON DELETE SET NULL,
+    FOREIGN KEY (pack_id) REFERENCES packs(id) ON DELETE SET NULL,
+    FOREIGN KEY (user_card_id) REFERENCES user_cards(id) ON DELETE SET NULL
+);
+"""
+
+CREATE_CREATOR_BONUS_CLAIMS_TABLE = """
+CREATE TABLE IF NOT EXISTS creator_bonus_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    bonus_type TEXT NOT NULL CHECK(bonus_type IN ('welcome','weekly')),
+    level INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_CREATOR_BANK_ITEMS_USER_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_creator_bank_items_user ON creator_bank_items(user_id, status, item_type);
+"""
+
+CREATE_CREATOR_BANK_ITEMS_CARD_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_creator_bank_items_card ON creator_bank_items(user_card_id, status);
+"""
+
+CREATE_CREATOR_DISTRIBUTIONS_CREATOR_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_creator_distributions_creator ON creator_distributions(creator_user_id, created_at);
+"""
+
+CREATE_CREATOR_BONUS_CLAIMS_UNIQUE_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_creator_bonus_claims_unique ON creator_bonus_claims(user_id, bonus_type, level);
+"""
+
 CREATE_CREATOR_APPLICATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS creator_applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1237,6 +1555,73 @@ CREATE TABLE IF NOT EXISTS creator_distributions (
 """
 
 
+CREATE_TEAM_DIVISIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS team_divisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL UNIQUE,
+    image_path TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_TEAM_DIVISION_TEAMS_TABLE = """
+CREATE TABLE IF NOT EXISTS team_division_teams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    division_id INTEGER NOT NULL,
+    team_name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(team_name),
+    FOREIGN KEY (division_id) REFERENCES team_divisions(id) ON DELETE CASCADE
+);
+"""
+
+CREATE_ANIMATION_ASSETS_TABLE = """
+CREATE TABLE IF NOT EXISTS animation_assets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_type TEXT NOT NULL CHECK(asset_type IN ('division','team','country','stage')),
+    asset_key TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    image_path TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(asset_type, asset_key)
+);
+"""
+
+CREATE_REWARD_SETTINGS_TABLE = """
+CREATE TABLE IF NOT EXISTS reward_settings (
+    key TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    reward_type TEXT NOT NULL DEFAULT 'currency',
+    currency_code TEXT,
+    amount INTEGER NOT NULL DEFAULT 0,
+    pack_id INTEGER,
+    card_id INTEGER,
+    active INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (currency_code) REFERENCES currencies(code) ON DELETE SET NULL,
+    FOREIGN KEY (pack_id) REFERENCES packs(id) ON DELETE SET NULL,
+    FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE SET NULL
+);
+"""
+
+CREATE_TEAM_DIVISION_TEAMS_DIVISION_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_team_division_teams_division ON team_division_teams(division_id);
+"""
+
+CREATE_TEAM_DIVISION_TEAMS_TEAM_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_team_division_teams_team ON team_division_teams(team_name);
+"""
+
+CREATE_ANIMATION_ASSETS_TYPE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_animation_assets_type ON animation_assets(asset_type, asset_key);
+"""
+
+
 SCHEMA_QUERIES = [
     CREATE_GAME_SETTINGS_TABLE,
     CREATE_SECURITY_LOGS_TABLE,
@@ -1270,6 +1655,7 @@ SCHEMA_QUERIES = [
     CREATE_STARTER_KIT_CARDS_TABLE,
     CREATE_CLANS_TABLE,
     CREATE_CLAN_MEMBERS_TABLE,
+    CREATE_CLAN_WAR_PLAYER_STATS_TABLE,
     CREATE_CLAN_ARENAS_TABLE,
     CREATE_CLAN_ARENA_ATTACKS_TABLE,
     CREATE_CLAN_ARENAS_ACTIVE_INDEX,
@@ -1285,10 +1671,26 @@ SCHEMA_QUERIES = [
     CREATE_CLAN_JOIN_REQUESTS_INDEX,
     CREATE_SEASONS_TABLE,
     CREATE_SEASON_REWARD_TIERS_TABLE,
+    CREATE_CLAN_SEASONS_TABLE,
+    CREATE_CLAN_SEASON_REWARD_TIERS_TABLE,
+    CREATE_CREATOR_LEVEL_SETTINGS_TABLE,
+    CREATE_CREATOR_BANK_ITEMS_TABLE,
+    CREATE_CREATOR_BONUS_CLAIMS_TABLE,
+    CREATE_CREATOR_BANK_ITEMS_USER_INDEX,
+    CREATE_CREATOR_BANK_ITEMS_CARD_INDEX,
+    CREATE_CREATOR_BONUS_CLAIMS_UNIQUE_INDEX,
     CREATE_CREATOR_APPLICATIONS_TABLE,
     CREATE_CREATOR_INVENTORY_TABLE,
     CREATE_CREATOR_PACK_INVENTORY_TABLE,
     CREATE_CREATOR_DISTRIBUTIONS_TABLE,
+    CREATE_CREATOR_DISTRIBUTIONS_CREATOR_INDEX,
+    CREATE_TEAM_DIVISIONS_TABLE,
+    CREATE_TEAM_DIVISION_TEAMS_TABLE,
+    CREATE_ANIMATION_ASSETS_TABLE,
+    CREATE_REWARD_SETTINGS_TABLE,
+    CREATE_TEAM_DIVISION_TEAMS_DIVISION_INDEX,
+    CREATE_TEAM_DIVISION_TEAMS_TEAM_INDEX,
+    CREATE_ANIMATION_ASSETS_TYPE_INDEX,
     CREATE_TRADE_OFFERS_TABLE,
     CREATE_TRADE_OFFER_CARDS_TABLE,
     CREATE_TRADE_OFFER_WANTED_CARDS_TABLE,

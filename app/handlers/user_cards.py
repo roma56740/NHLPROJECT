@@ -1,6 +1,4 @@
 from html import escape
-from pathlib import Path
-
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -24,7 +22,7 @@ from app.services.quick_sell import (
     quick_sell_single,
     toggle_card_lock,
 )
-from app.services.renders import render_collection_image
+from app.services.renders import render_card_profile_image, render_collection_image
 from app.services.user_cards import (
     get_player_card_profile,
     get_player_cards_page,
@@ -194,9 +192,12 @@ async def show_card_profile(callback: CallbackQuery, user_card_id: int, page: in
         is_locked=card.trade_locked,
         in_lineup=card.is_in_lineup,
     )
-    image_path = Path(card.image_path)
+    try:
+        image_path = render_card_profile_image(card, user_id=callback.from_user.id)
+    except Exception:
+        image_path = None
 
-    if image_path.exists():
+    if image_path is not None:
         await safe_delete_callback_message(callback)
         await callback.bot.send_photo(
             chat_id=message.chat.id,

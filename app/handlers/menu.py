@@ -50,7 +50,7 @@ def build_home_text(profile, match_info) -> str:
 
 async def show_home(message: Message, telegram_id: int) -> None:
     if is_admin(telegram_id):
-        await message.answer("🏠 Главное меню админ-панели.", reply_markup=build_admin_main_keyboard())
+        await message.answer("🏠 Главное меню админ-панели.", reply_markup=build_admin_main_keyboard(message.from_user.id if message.from_user else None))
         return
 
     profile = await get_player_profile_by_telegram_id(telegram_id)
@@ -86,7 +86,7 @@ async def back_to_main_menu(callback: CallbackQuery) -> None:
         await callback.bot.send_message(
             chat_id=chat_id,
             text="🏠 Главное меню админ-панели.",
-            reply_markup=build_admin_main_keyboard(),
+            reply_markup=build_admin_main_keyboard(user_id),
         )
     else:
         profile = await get_player_profile_by_telegram_id(user_id) if user_id else None

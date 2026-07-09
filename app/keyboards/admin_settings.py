@@ -12,6 +12,16 @@ SETTING_KEYS = [
     ("start_coins", "🪙 Стартовые Coins"),
     ("start_energy", "💵 Стартовые Рубли"),
     ("start_rank_points", "🏅 Стартовые Rank-point"),
+    ("free_card_cooldown_hours", "🎁 Кулдаун бесплатной карты"),
+    ("creator_weekly_rewards_enabled", "⭐ Недельные креаторы"),
+    ("creator_weekly_rewards_interval_hours", "⭐ Интервал креаторов"),
+    ("asset_warning_enabled", "⚠️ Предупреждения картинок"),
+    ("asset_warning_interval_hours", "⚠️ Интервал предупреждений"),
+    ("subscription_required_enabled", "📢 Обязательная подписка"),
+    ("subscription_channel_id", "📢 Канал подписки"),
+    ("subscription_channel_url", "🔗 Ссылка на канал"),
+    ("start_banner_path", "🖼 Стартовая картинка"),
+    ("pack_animation_step_delay_ms", "✨ Скорость анимации"),
 ]
 
 

@@ -1,21 +1,19 @@
 from html import escape
-from pathlib import Path
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import FSInputFile, Message
+from aiogram.types import Message, User
 
 from app.keyboards.reply import build_admin_main_keyboard, build_user_main_keyboard
 from app.services.currencies import format_currency_amount
+from app.services.subscription import get_start_banner_file, get_subscription_settings
 from app.services.users import PlayerProfile, register_or_update_player
 from app.utils.users import is_admin
 
 
 router = Router()
-
-LOGO_PATH = Path("logo.png")
 
 
 USER_START_TEXT = """
@@ -91,24 +89,22 @@ def build_start_text(profile: PlayerProfile, is_user_admin: bool) -> str:
     )
 
 
-@router.message(CommandStart())
-async def start_command(message: Message, state: FSMContext) -> None:
-    if message.from_user is None:
-        return
-
-    await state.clear()
-
-    profile = await register_or_update_player(message.from_user)
-    is_user_admin = is_admin(message.from_user.id)
+async def send_start_screen(message: Message, telegram_user: User, delete_trigger: bool = False) -> None:
+    profile = await register_or_update_player(telegram_user)
+    is_user_admin = is_admin(telegram_user.id)
 
     text = build_start_text(profile, is_user_admin)
-    keyboard = build_admin_main_keyboard() if is_user_admin else build_user_main_keyboard()
+    keyboard = build_admin_main_keyboard(telegram_user.id) if is_user_admin else build_user_main_keyboard()
 
-    await delete_start_message(message)
+    if delete_trigger:
+        await delete_start_message(message)
 
-    if LOGO_PATH.exists():
+    subscription_settings = await get_subscription_settings()
+    banner = get_start_banner_file(subscription_settings)
+
+    if banner is not None:
         await message.answer_photo(
-            photo=FSInputFile(LOGO_PATH),
+            photo=banner,
             caption=text,
             reply_markup=keyboard,
         )
@@ -118,3 +114,12 @@ async def start_command(message: Message, state: FSMContext) -> None:
         text,
         reply_markup=keyboard,
     )
+
+
+@router.message(CommandStart())
+async def start_command(message: Message, state: FSMContext) -> None:
+    if message.from_user is None:
+        return
+
+    await state.clear()
+    await send_start_screen(message, message.from_user, delete_trigger=True)

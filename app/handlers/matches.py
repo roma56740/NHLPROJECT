@@ -5,7 +5,7 @@ from datetime import datetime
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from app.keyboards.matches import (
     build_match_captcha_keyboard,
@@ -17,6 +17,8 @@ from app.keyboards.matches import (
     build_match_search_keyboard,
     build_matches_main_keyboard,
 )
+from app.services.lineup import get_lineup_overview
+from app.services.renders import render_lineup_image, render_opponent_lineup_placeholder
 from app.services.matches import (
     MatchPlayResult,
     cancel_match_search,
@@ -120,6 +122,51 @@ async def edit_stored_message(bot, chat_id: int, message_id: int, text: str, rep
         )
     except TelegramBadRequest:
         await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+
+
+async def send_match_lineup_previews(*, bot, chat_id: int, result: MatchPlayResult) -> None:
+    """Перед матчем отправляет две картинки: сначала состав игрока, потом состав соперника."""
+    try:
+        if result.user_id is not None:
+            own_overview = await get_lineup_overview(result.user_id)
+            own_image = render_lineup_image(own_overview, result.user_id, title="ТВОЙ СОСТАВ")
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=FSInputFile(own_image),
+                caption=f"<b>Твой состав</b>\nOVR: <b>{own_overview.average_overall or '—'}</b> (+{own_overview.chemistry_bonus})",
+            )
+            await asyncio.sleep(0.7)
+
+        if result.opponent_user_id is not None:
+            opponent_overview = await get_lineup_overview(result.opponent_user_id)
+            opponent_image = render_lineup_image(
+                opponent_overview,
+                result.opponent_user_id,
+                title=f"СОСТАВ СОПЕРНИКА: {result.opponent_name}",
+            )
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=FSInputFile(opponent_image),
+                caption=(
+                    f"<b>Состав соперника</b>\n"
+                    f"{result.opponent_name}\n"
+                    f"OVR: <b>{opponent_overview.average_overall or '—'}</b> (+{opponent_overview.chemistry_bonus})"
+                ),
+            )
+        else:
+            opponent_image = render_opponent_lineup_placeholder(
+                opponent_name=result.opponent_name or "BOT",
+                opponent_ovr=result.opponent_lineup_ovr,
+                user_id=result.user_id or 0,
+            )
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=FSInputFile(opponent_image),
+                caption=f"<b>Состав соперника</b>\n{result.opponent_name or 'BOT'}\nOVR: <b>{result.opponent_lineup_ovr}</b> (+0)",
+            )
+            await asyncio.sleep(0.7)
+    except Exception as error:
+        logger.exception("Failed to render pre-match lineups: %s", error)
 
 
 def build_goal_timeline(result: MatchPlayResult) -> list[tuple[str, object | None]]:
@@ -238,6 +285,19 @@ async def _run_match_animation_and_result(
     opponent_chat_id: int | None = None,
     opponent_message_id: int | None = None,
 ) -> None:
+    await send_match_lineup_previews(
+        bot=callback.bot,
+        chat_id=current_message.chat.id,
+        result=current_result,
+    )
+
+    if opponent_result is not None and opponent_chat_id is not None:
+        await send_match_lineup_previews(
+            bot=callback.bot,
+            chat_id=opponent_chat_id,
+            result=opponent_result,
+        )
+
     await edit_stored_message(
         callback.bot,
         current_message.chat.id,
@@ -303,6 +363,8 @@ async def show_single_match_playing_and_result(
     message_id: int,
     result: MatchPlayResult,
 ) -> None:
+    await send_match_lineup_previews(bot=bot, chat_id=chat_id, result=result)
+
     await edit_stored_message(
         bot,
         chat_id,
