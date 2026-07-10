@@ -19,3 +19,6 @@ assets/uploads/
 *.sqlite
 *.sqlite3
 *.db
+
+# Railway temporary render cache
+data/render_cache/

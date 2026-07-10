@@ -798,6 +798,9 @@ async def distribute_bank_item(creator_user_id: int, target_telegram_id: int, it
             connection.rollback()
             return False, "Игрок с таким ID не найден.", 0
         target_id = int(target["id"])
+        if target_id == creator_user_id:
+            connection.rollback()
+            return False, "Нельзя выдавать награды самому себе.", 0
 
         row = connection.execute(
             """

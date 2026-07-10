@@ -41,6 +41,7 @@ def build_creator_panel_keyboard(panel: CreatorPanel) -> InlineKeyboardMarkup:
     ]
     if panel.bank_items:
         rows.append([InlineKeyboardButton(text="🎁 Выдать из банка", callback_data="creator:bank_give")])
+    rows.append([InlineKeyboardButton(text="🏆 Турниры", callback_data="creator:tournaments")])
     rows.append([InlineKeyboardButton(text="📜 История выдач", callback_data="creator:history")])
     rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="creator:panel")])
     rows.append([InlineKeyboardButton(text="🏠 В меню", callback_data="menu:main")])

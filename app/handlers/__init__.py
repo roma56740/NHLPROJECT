@@ -1,6 +1,6 @@
 from aiogram import Router
 
-from app.handlers import admin_arenas, admin_cards, admin_divisions, admin_salaries, admin_chemistry, admin_panel, admin_rating, admin_rewards, clan_seasons, admin_security, admin_settings, admin_users, admin_wallets, broadcast, clan_wars, community, bulk_cards, creators, daily_login, promo, seasons, events, free_card, hockey_pass, lineup, matches, menu, packs, profile, quests, rating, shop, start, subscription, starter_kit, user_cards
+from app.handlers import admin_arenas, admin_cards, admin_divisions, admin_salaries, admin_chemistry, admin_panel, admin_rating, admin_rewards, clan_seasons, admin_security, admin_settings, admin_users, admin_wallets, broadcast, clan_wars, community, bulk_cards, creators, creator_tournaments, daily_login, promo, seasons, events, free_card, hockey_pass, lineup, matches, menu, packs, profile, quests, rating, shop, start, subscription, starter_kit, user_cards
 from app.middlewares.banned import BannedPlayerMiddleware
 from app.middlewares.admin_permissions import AdminPermissionMiddleware
 
@@ -45,6 +45,7 @@ def setup_routers() -> Router:
     router.include_router(daily_login.router)
     router.include_router(promo.router)
     router.include_router(creators.router)
+    router.include_router(creator_tournaments.router)
     router.include_router(seasons.router)
     router.include_router(bulk_cards.router)
     router.include_router(broadcast.router)

@@ -1,4 +1,4 @@
-﻿import os
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -55,6 +55,15 @@ def ensure_uploads_link():
     print(f"[uploads] linked {ASSETS_UPLOADS} -> {DATA_UPLOADS}", flush=True)
 
 
+def cleanup_startup_cache():
+    try:
+        from app.services.cache_cleanup import cleanup_render_cache
+        cleanup_render_cache()
+    except Exception as error:
+        print(f"[render_cache] startup cleanup failed: {error}", flush=True)
+
+
 ensure_uploads_link()
+cleanup_startup_cache()
 
 os.execv(sys.executable, [sys.executable, "main.py"])

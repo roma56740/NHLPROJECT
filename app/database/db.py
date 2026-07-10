@@ -61,6 +61,8 @@ async def init_database() -> None:
 
 
 def run_migrations(connection: sqlite3.Connection) -> None:
+    from app.services.creator_tournaments import migrate_creator_tournaments
+    migrate_creator_tournaments(connection)
     ensure_column(
         connection=connection,
         table_name="cards",
