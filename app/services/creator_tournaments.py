@@ -2,14 +2,75 @@ from __future__ import annotations
 
 import json
 import random
+import re
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.database.db import get_connection
+from app.database.db import ensure_column, get_connection
 from app.services.rewards import grant_currency, grant_pack
 
 ALLOWED_SIZES = {2, 4, 8, 16, 32}
 ALLOWED_DURATIONS = {30, 60, 180, 360, 720, 1440}
+
+# --- Match state machine (см. docs/TOURNAMENT_RELIABILITY_SPEC.md) ---
+# 'pending' — легаси-синоним 'waiting' (существующие строки в проде), оба значения
+# везде трактуются одинаково — не мигрируем старые строки, только новый код пишет
+# 'waiting'.
+STATUS_WAITING = "waiting"
+STATUS_PLAYING = "playing"
+STATUS_COMPLETED = "completed"
+STATUS_FAILED = "failed"
+STATUS_CANCELLED = "cancelled"
+LEGACY_WAITING_STATUSES = ("pending", "waiting")
+# 'problem' — легаси dead-end статус из старой версии кода, трактуется как 'failed'
+# для целей отображения/восстановления, отдельно не мигрируется.
+LEGACY_FAILED_STATUSES = ("problem", "failed")
+
+SUSPICIOUS_AFTER_MINUTES = 15
+FAIL_AFTER_MINUTES = 30
+PENDING_RESULT_TTL_MINUTES = 30
+
+MAX_SCORE = 30
+_SCORE_PATTERN = re.compile(r"^\s*(\d{1,3})\s*(?:[:\-–—]|\s)\s*(\d{1,3})\s*$")
+
+INVITE_TOKEN_BYTES = 9
+INVITE_PAYLOAD_PREFIX = "ct_"
+
+
+def _new_invite_token() -> str:
+    return secrets.token_urlsafe(INVITE_TOKEN_BYTES)
+
+
+def invite_payload(token: str) -> str:
+    return f"{INVITE_PAYLOAD_PREFIX}{token}"
+
+
+def parse_invite_payload(payload: str | None) -> str | None:
+    value = str(payload or "").strip()
+    if not value.startswith(INVITE_PAYLOAD_PREFIX):
+        return None
+    token = value[len(INVITE_PAYLOAD_PREFIX):].strip()
+    if not token or len(token) > 48 or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        return None
+    return token
+
+
+
+def parse_score_text(text: str | None) -> tuple[int, int] | None:
+    """Разбирает счёт матча: "3:2", "3-2", "3 — 2", "3 2". Отклоняет ничью,
+    отрицательные/пустые/множественные значения и значения выше MAX_SCORE."""
+    if not text:
+        return None
+    match = _SCORE_PATTERN.match(text.strip())
+    if not match:
+        return None
+    score1, score2 = int(match.group(1)), int(match.group(2))
+    if score1 > MAX_SCORE or score2 > MAX_SCORE:
+        return None
+    if score1 == score2:
+        return None
+    return score1, score2
 
 
 def _utcnow() -> datetime:
@@ -32,15 +93,49 @@ def migrate_creator_tournaments(connection) -> None:
         """CREATE TABLE IF NOT EXISTS creator_tournament_reward_items (id INTEGER PRIMARY KEY AUTOINCREMENT, tournament_id INTEGER NOT NULL, place_from INTEGER NOT NULL, place_to INTEGER NOT NULL, bank_item_id INTEGER NOT NULL, item_type TEXT NOT NULL, currency_code TEXT, pack_id INTEGER, user_card_id INTEGER, quantity INTEGER NOT NULL, value_per_unit INTEGER NOT NULL DEFAULT 0, delivered INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(tournament_id) REFERENCES creator_tournaments(id) ON DELETE CASCADE)""",
         """CREATE TABLE IF NOT EXISTS creator_tournament_reward_deliveries (id INTEGER PRIMARY KEY AUTOINCREMENT, tournament_id INTEGER NOT NULL, reward_item_id INTEGER NOT NULL, recipient_user_id INTEGER NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'delivered', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
         """CREATE TABLE IF NOT EXISTS creator_tournament_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, tournament_id INTEGER NOT NULL, actor_user_id INTEGER, action TEXT NOT NULL, details TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
+        """CREATE TABLE IF NOT EXISTS creator_tournament_pending_results (id INTEGER PRIMARY KEY AUTOINCREMENT, creator_user_id INTEGER NOT NULL, tournament_id INTEGER NOT NULL, match_id INTEGER NOT NULL, chat_id INTEGER NOT NULL, prompt_message_id INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', FOREIGN KEY(tournament_id) REFERENCES creator_tournaments(id) ON DELETE CASCADE, FOREIGN KEY(match_id) REFERENCES creator_tournament_matches(id) ON DELETE CASCADE)""",
         "CREATE INDEX IF NOT EXISTS idx_creator_tournaments_status ON creator_tournaments(status,created_at)",
         "CREATE INDEX IF NOT EXISTS idx_creator_tournament_matches_deadline ON creator_tournament_matches(status,deadline)",
+        "CREATE INDEX IF NOT EXISTS idx_creator_pending_results_creator ON creator_tournament_pending_results(creator_user_id,status)",
+        "CREATE INDEX IF NOT EXISTS idx_creator_pending_results_match ON creator_tournament_pending_results(match_id,status)",
     ]
     for query in queries:
         connection.execute(query)
 
+    # Explicit match state machine — новые поля, аддитивно (см. раздел 2 спеки).
+    ensure_column(connection, "creator_tournament_matches", "started_at", "started_at TEXT")
+    ensure_column(connection, "creator_tournament_matches", "last_activity_at", "last_activity_at TEXT")
+    ensure_column(connection, "creator_tournament_matches", "attempt_count", "attempt_count INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection, "creator_tournament_matches", "error_message", "error_message TEXT")
+    ensure_column(connection, "creator_tournament_matches", "processing_token", "processing_token TEXT")
+    ensure_column(connection, "creator_tournament_matches", "updated_at", "updated_at TEXT")
+    ensure_column(connection, "creator_tournaments", "invite_token", "invite_token TEXT")
+    ensure_column(connection, "creator_tournaments", "invite_enabled", "invite_enabled INTEGER NOT NULL DEFAULT 1")
+
+    missing = connection.execute(
+        "SELECT id FROM creator_tournaments WHERE invite_token IS NULL OR invite_token = ''"
+    ).fetchall()
+    for row in missing:
+        while True:
+            token = _new_invite_token()
+            exists = connection.execute(
+                "SELECT 1 FROM creator_tournaments WHERE invite_token = ? LIMIT 1", (token,)
+            ).fetchone()
+            if not exists:
+                connection.execute(
+                    "UPDATE creator_tournaments SET invite_token = ? WHERE id = ?",
+                    (token, int(row["id"])),
+                )
+                break
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_creator_tournaments_invite_token ON creator_tournaments(invite_token)"
+    )
+
 
 def _log(c, tournament_id: int, actor: int | None, action: str, details: Any='') -> None:
     c.execute('INSERT INTO creator_tournament_logs(tournament_id,actor_user_id,action,details) VALUES(?,?,?,?)', (tournament_id,actor,action,json.dumps(details,ensure_ascii=False) if not isinstance(details,str) else details))
+    from app.services import audit_log
+    audit_log.record(c, actor, f'tournament:{action}', 'creator_tournament', tournament_id, details)
 
 
 async def create_tournament(creator_user_id: int, title: str, description: str, capacity: int, duration: int, rewards: list[dict]) -> tuple[bool,str,int|None]:
@@ -53,7 +148,10 @@ async def create_tournament(creator_user_id: int, title: str, description: str, 
         creator=c.execute('SELECT is_creator FROM users WHERE id=?',(creator_user_id,)).fetchone()
         if not creator or not creator['is_creator']:
             c.rollback(); return False,'Только для официальных креаторов.',None
-        cur=c.execute('INSERT INTO creator_tournaments(creator_user_id,title,description,capacity,round_duration_minutes) VALUES(?,?,?,?,?)',(creator_user_id,title.strip(),description.strip(),capacity,duration))
+        invite_token = _new_invite_token()
+        while c.execute('SELECT 1 FROM creator_tournaments WHERE invite_token=? LIMIT 1',(invite_token,)).fetchone():
+            invite_token = _new_invite_token()
+        cur=c.execute('INSERT INTO creator_tournaments(creator_user_id,title,description,capacity,round_duration_minutes,invite_token,invite_enabled) VALUES(?,?,?,?,?,?,1)',(creator_user_id,title.strip(),description.strip(),capacity,duration,invite_token))
         tid=int(cur.lastrowid)
         for reward in rewards:
             item_id=int(reward['bank_item_id']); qty=int(reward['quantity']); pf=int(reward['place_from']); pt=int(reward.get('place_to',pf))
@@ -65,6 +163,69 @@ async def create_tournament(creator_user_id: int, title: str, description: str, 
         _log(c,tid,creator_user_id,'created',{'capacity':capacity,'duration':duration})
         c.commit()
     return True,'Турнир создан. Награды зарезервированы.',tid
+
+
+async def get_tournament_invite(tournament_id: int) -> dict[str, Any] | None:
+    with get_connection() as c:
+        row = c.execute(
+            """
+            SELECT t.*, u.nickname AS creator_nickname,
+                   (SELECT COUNT(*) FROM creator_tournament_participants p WHERE p.tournament_id=t.id) AS participants_count
+            FROM creator_tournaments t
+            LEFT JOIN users u ON u.id=t.creator_user_id
+            WHERE t.id=?
+            """, (tournament_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+async def get_tournament_by_invite_token(token: str) -> dict[str, Any] | None:
+    token = str(token or "").strip()
+    if not token:
+        return None
+    with get_connection() as c:
+        row = c.execute(
+            """
+            SELECT t.*, u.nickname AS creator_nickname,
+                   (SELECT COUNT(*) FROM creator_tournament_participants p WHERE p.tournament_id=t.id) AS participants_count
+            FROM creator_tournaments t
+            LEFT JOIN users u ON u.id=t.creator_user_id
+            WHERE t.invite_token=? AND t.invite_enabled=1
+            """, (token,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+async def ensure_tournament_invite_token(tournament_id: int, creator_user_id: int | None = None) -> str | None:
+    with get_connection() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute(
+            "SELECT creator_user_id,invite_token FROM creator_tournaments WHERE id=?", (tournament_id,)
+        ).fetchone()
+        if not row or (creator_user_id is not None and int(row["creator_user_id"]) != int(creator_user_id)):
+            c.rollback()
+            return None
+        token = str(row["invite_token"] or "").strip()
+        if not token:
+            while True:
+                token = _new_invite_token()
+                if not c.execute("SELECT 1 FROM creator_tournaments WHERE invite_token=? LIMIT 1", (token,)).fetchone():
+                    break
+            c.execute(
+                "UPDATE creator_tournaments SET invite_token=?,invite_enabled=1 WHERE id=?",
+                (token, tournament_id),
+            )
+        c.commit()
+        return token
+
+
+async def is_tournament_participant(tournament_id: int, user_id: int) -> bool:
+    with get_connection() as c:
+        row = c.execute(
+            "SELECT 1 FROM creator_tournament_participants WHERE tournament_id=? AND user_id=? LIMIT 1",
+            (tournament_id, user_id),
+        ).fetchone()
+    return row is not None
 
 
 async def register(tournament_id:int, user_id:int)->tuple[bool,str,bool]:
@@ -96,24 +257,46 @@ def _start_bracket(c,tid:int,capacity:int,duration:int)->None:
     c.execute("UPDATE creator_tournaments SET status='active',started_at=CURRENT_TIMESTAMP WHERE id=?",(tid,)); _log(c,tid,None,'started')
 
 
+async def _mark_match_failed(match_id: int, error_message: str) -> None:
+    with get_connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        m = c.execute('SELECT tournament_id,status FROM creator_tournament_matches WHERE id=?', (match_id,)).fetchone()
+        if not m or m['status'] == STATUS_COMPLETED:
+            c.rollback(); return
+        c.execute(
+            "UPDATE creator_tournament_matches SET status=?,error_message=?,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (STATUS_FAILED, (error_message or '')[:500], match_id),
+        )
+        _log(c, int(m['tournament_id']), None, 'match_failed', {'match_id': match_id, 'error': error_message})
+        c.commit()
+
+
 async def mark_ready_and_play(match_id:int,user_id:int)->tuple[bool,str,dict|None]:
     with get_connection() as c:
         c.execute('BEGIN IMMEDIATE')
-        m=c.execute("SELECT * FROM creator_tournament_matches WHERE id=? AND status IN ('pending','waiting')",(match_id,)).fetchone()
+        m=c.execute("SELECT * FROM creator_tournament_matches WHERE id=? AND status IN (?,?)",(match_id,*LEGACY_WAITING_STATUSES)).fetchone()
         if not m or user_id not in (m['player1_user_id'],m['player2_user_id']): c.rollback(); return False,'Матч недоступен.',None
         col='player1_ready_at' if user_id==m['player1_user_id'] else 'player2_ready_at'
-        c.execute(f'UPDATE creator_tournament_matches SET {col}=COALESCE({col},CURRENT_TIMESTAMP),status=\'waiting\' WHERE id=?',(match_id,))
+        c.execute(f'UPDATE creator_tournament_matches SET {col}=COALESCE({col},CURRENT_TIMESTAMP),status=?,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?',(STATUS_WAITING,match_id))
         m=c.execute('SELECT * FROM creator_tournament_matches WHERE id=?',(match_id,)).fetchone()
         if not m['player1_ready_at'] or not m['player2_ready_at']:
             c.commit(); return True,'Ожидаем соперника...',None
-        changed=c.execute("UPDATE creator_tournament_matches SET status='playing' WHERE id=? AND status='waiting'",(match_id,)).rowcount
+        changed=c.execute("UPDATE creator_tournament_matches SET status=?,started_at=CURRENT_TIMESTAMP,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status=?",(STATUS_PLAYING,match_id,STATUS_WAITING)).rowcount
         if not changed: c.rollback(); return False,'Матч уже запускается.',None
         users=c.execute('SELECT id,telegram_id FROM users WHERE id IN (?,?)',(m['player1_user_id'],m['player2_user_id'])).fetchall(); c.commit()
     tele={int(r['id']):int(r['telegram_id']) for r in users}
     from app.services.matches import play_player_match
-    r1,r2=await play_player_match(tele[int(m['player1_user_id'])],tele[int(m['player2_user_id'])])
+    try:
+        r1,r2=await play_player_match(tele[int(m['player1_user_id'])],tele[int(m['player2_user_id'])],match_type='tournament')
+    except Exception as error:
+        # Матч запущен (status='playing' уже закоммичен) — при сбое движка обязательно
+        # переводим в 'failed' с причиной, а не оставляем молча висеть навсегда.
+        from app.services import error_log
+        error_log.record_error('creator_tournaments.mark_ready_and_play', error, context=f'match_id={match_id}')
+        await _mark_match_failed(match_id, str(error))
+        return False,'Не удалось запустить матч. Создатель турнира уведомлён и может восстановить матч.',None
     if not r1 or not r2:
-        with get_connection() as c:c.execute("UPDATE creator_tournament_matches SET status='problem' WHERE id=?",(match_id,));c.commit()
+        await _mark_match_failed(match_id, 'Составы не готовы к матчу.')
         return False,'Не удалось запустить матч: проверьте составы.',None
     winner=int(m['player1_user_id']) if r1.user_score>r1.opponent_score else int(m['player2_user_id'])
     await complete_match(match_id,winner,r1.user_score,r1.opponent_score,'played')
@@ -125,8 +308,8 @@ async def complete_match(match_id:int,winner_id:int,score1:int|None=None,score2:
         c.execute('BEGIN IMMEDIATE'); m=c.execute('SELECT * FROM creator_tournament_matches WHERE id=?',(match_id,)).fetchone()
         if not m or m['status']=='completed': c.rollback(); return
         loser=int(m['player2_user_id'] if winner_id==m['player1_user_id'] else m['player1_user_id'])
-        c.execute("UPDATE creator_tournament_matches SET winner_user_id=?,loser_user_id=?,score1=?,score2=?,status='completed',decided_by=?,completed_at=CURRENT_TIMESTAMP WHERE id=?",(winner_id,loser,score1,score2,decided_by,match_id))
-        _log(c,int(m['tournament_id']),winner_id,'match_completed',{'match_id':match_id,'by':decided_by})
+        c.execute("UPDATE creator_tournament_matches SET winner_user_id=?,loser_user_id=?,score1=?,score2=?,status='completed',decided_by=?,error_message=NULL,completed_at=CURRENT_TIMESTAMP,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",(winner_id,loser,score1,score2,decided_by,match_id))
+        _log(c,int(m['tournament_id']),winner_id,'match_completed',{'match_id':match_id,'by':decided_by,'score':f'{score1}:{score2}'})
         _advance(c,int(m['tournament_id']),int(m['round_no']))
         c.commit()
 
@@ -147,7 +330,12 @@ def _advance(c,tid:int,round_no:int)->None:
     for idx in range(next_size//2): c.execute('INSERT OR IGNORE INTO creator_tournament_matches(tournament_id,round_no,round_name,bracket_index,player1_user_id,player2_user_id,deadline) VALUES(?,?,?,?,?,?,?)',(tid,rn,_round_name(next_size),idx,winners[idx*2],winners[idx*2+1],deadline))
     if len(current)==2:
         losers=[int(r['loser_user_id']) for r in current]
-        c.execute('INSERT OR IGNORE INTO creator_tournament_matches(tournament_id,round_no,round_name,bracket_index,player1_user_id,player2_user_id,deadline,is_third_place) VALUES(?,?,?,?,?,?,?,?,1)',(tid,rn,'Матч за 3 место',0,losers[0],losers[1],deadline))
+        # ВАЖНО: было 9 value-выражений (8 "?" + буквальная "1") на 8 колонок —
+        # SQLite бросал "9 values for 8 columns" при каждом турнире с 4+ участниками,
+        # ровно на этапе создания матча за 3-е место после полуфиналов. Плюс params
+        # был короче на один элемент (is_third_place передавался литералом мимо
+        # биндинга). Исправлено: is_third_place передаётся обычным параметром.
+        c.execute('INSERT OR IGNORE INTO creator_tournament_matches(tournament_id,round_no,round_name,bracket_index,player1_user_id,player2_user_id,deadline,is_third_place) VALUES(?,?,?,?,?,?,?,?)',(tid,rn,'Матч за 3 место',0,losers[0],losers[1],deadline,1))
 
 
 def _finish(c,tid:int)->None:
@@ -185,10 +373,188 @@ async def tournament_text(tid:int)->str:
 async def expire_tournament_matches()->list[dict]:
     actions=[]
     with get_connection() as c:
-        rows=c.execute("SELECT * FROM creator_tournament_matches WHERE status IN ('pending','waiting') AND deadline<CURRENT_TIMESTAMP").fetchall()
+        rows=c.execute("SELECT * FROM creator_tournament_matches WHERE status IN (?,?) AND deadline IS NOT NULL AND deadline<CURRENT_TIMESTAMP",LEGACY_WAITING_STATUSES).fetchall()
     for m in rows:
         if bool(m['player1_ready_at']) ^ bool(m['player2_ready_at']):
             winner=int(m['player1_user_id'] if m['player1_ready_at'] else m['player2_user_id']); await complete_match(int(m['id']),winner,None,None,'walkover');actions.append({'match_id':m['id'],'winner':winner})
         elif not m['player1_ready_at'] and not m['player2_ready_at']:
-            with get_connection() as c:c.execute("UPDATE creator_tournament_matches SET status='problem' WHERE id=? AND status IN ('pending','waiting')",(m['id'],));_log(c,m['tournament_id'],None,'problem_match',{'match_id':m['id']});c.commit()
+            with get_connection() as c:
+                c.execute('BEGIN IMMEDIATE')
+                changed=c.execute("UPDATE creator_tournament_matches SET status=?,error_message='Оба игрока не отметились до дедлайна.',last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN (?,?)",(STATUS_FAILED,m['id'],*LEGACY_WAITING_STATUSES)).rowcount
+                if changed:_log(c,m['tournament_id'],None,'problem_match',{'match_id':m['id']})
+                c.commit()
+            if changed:actions.append({'match_id':m['id'],'action':'no_show_failed'})
+
+    # Матчи, зависшие в 'playing' дольше FAIL_AFTER_MINUTES — переводим в 'failed' с
+    # причиной, чтобы креатор увидел кнопки восстановления (раздел 3 спеки). Матчи
+    # 15-30 минут в 'playing' считаются лишь "подозрительными" и не трогаются здесь —
+    # они видны через find_matches_needing_attention() для панели креатора.
+    with get_connection() as c:
+        stale=c.execute(
+            "SELECT id,tournament_id FROM creator_tournament_matches WHERE status=? AND last_activity_at IS NOT NULL AND last_activity_at<datetime('now',?)",
+            (STATUS_PLAYING,f'-{FAIL_AFTER_MINUTES} minutes'),
+        ).fetchall()
+    for m in stale:
+        await _mark_match_failed(int(m['id']),f'Матч завис в статусе playing более {FAIL_AFTER_MINUTES} минут.')
+        actions.append({'match_id':m['id'],'action':'stale_playing_failed'})
     return actions
+
+
+async def find_matches_needing_attention(tournament_id:int|None=None)->list[dict]:
+    """Матчи, зависшие в playing дольше SUSPICIOUS_AFTER_MINUTES, или в failed/problem."""
+    query=(
+        "SELECT m.*,u1.nickname n1,u2.nickname n2,t.creator_user_id,t.title tournament_title "
+        "FROM creator_tournament_matches m "
+        "LEFT JOIN users u1 ON u1.id=m.player1_user_id "
+        "LEFT JOIN users u2 ON u2.id=m.player2_user_id "
+        "JOIN creator_tournaments t ON t.id=m.tournament_id "
+        "WHERE (m.status=? AND m.last_activity_at IS NOT NULL AND m.last_activity_at<datetime('now',?)) "
+        "OR m.status IN (?,?)"
+    )
+    params:list[Any]=[STATUS_PLAYING,f'-{SUSPICIOUS_AFTER_MINUTES} minutes',STATUS_FAILED,'problem']
+    if tournament_id is not None:
+        query+=' AND m.tournament_id=?'; params.append(tournament_id)
+    query+=' ORDER BY m.last_activity_at ASC, m.id ASC'
+    with get_connection() as c:
+        rows=c.execute(query,params).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def _check_creator(tournament_id:int,actor_user_id:int,c=None)->tuple[bool,int|None]:
+    connection=c or get_connection()
+    row=connection.execute('SELECT creator_user_id FROM creator_tournaments WHERE id=?',(tournament_id,)).fetchone()
+    return (bool(row) and int(row['creator_user_id'])==actor_user_id),(int(row['creator_user_id']) if row else None)
+
+
+async def restart_match(match_id:int,actor_user_id:int)->tuple[bool,str]:
+    with get_connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        m=c.execute('SELECT * FROM creator_tournament_matches WHERE id=?',(match_id,)).fetchone()
+        if not m: c.rollback(); return False,'Матч не найден.'
+        if m['status']=='completed': c.rollback(); return False,f"Матч уже завершён со счётом {m['score1']}:{m['score2']}."
+        ok,_=await _check_creator(int(m['tournament_id']),actor_user_id,c)
+        if not ok: c.rollback(); return False,'Только создатель турнира может перезапустить матч.'
+        if m['status'] not in (STATUS_PLAYING,STATUS_FAILED,'problem'):
+            c.rollback(); return False,'Перезапуск доступен только для зависших или ошибочных матчей.'
+        c.execute(
+            "UPDATE creator_tournament_matches SET status=?,player1_ready_at=NULL,player2_ready_at=NULL,attempt_count=attempt_count+1,error_message=NULL,started_at=NULL,processing_token=NULL,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (STATUS_WAITING,match_id),
+        )
+        _log(c,int(m['tournament_id']),actor_user_id,'match_restarted',{'match_id':match_id,'attempt':int(m['attempt_count'] or 0)+1})
+        c.commit()
+    return True,'Матч перезапущен. Игроки могут отметиться заново.'
+
+
+async def cancel_match(match_id:int,actor_user_id:int,reason:str='')->tuple[bool,str]:
+    with get_connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        m=c.execute('SELECT * FROM creator_tournament_matches WHERE id=?',(match_id,)).fetchone()
+        if not m: c.rollback(); return False,'Матч не найден.'
+        if m['status']=='completed': c.rollback(); return False,f"Матч уже завершён со счётом {m['score1']}:{m['score2']}."
+        ok,_=await _check_creator(int(m['tournament_id']),actor_user_id,c)
+        if not ok: c.rollback(); return False,'Только создатель турнира может отменить матч.'
+        c.execute(
+            "UPDATE creator_tournament_matches SET status=?,error_message=?,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (STATUS_CANCELLED,(reason or 'Отменено создателем турнира.')[:500],match_id),
+        )
+        _log(c,int(m['tournament_id']),actor_user_id,'match_cancelled',{'match_id':match_id,'reason':reason})
+        c.commit()
+    return True,'Матч отменён.'
+
+
+async def force_simulate_match(match_id:int,actor_user_id:int)->tuple[bool,str,dict|None]:
+    with get_connection() as c:
+        m=c.execute('SELECT * FROM creator_tournament_matches WHERE id=?',(match_id,)).fetchone()
+        if not m: return False,'Матч не найден.',None
+        if m['status']=='completed': return False,f"Матч уже завершён со счётом {m['score1']}:{m['score2']}.",None
+        ok,_=await _check_creator(int(m['tournament_id']),actor_user_id)
+        if not ok: return False,'Только создатель турнира может запустить симуляцию.',None
+        if not m['player1_user_id'] or not m['player2_user_id']: return False,'Оба участника матча ещё не определены.',None
+        users=c.execute('SELECT id,telegram_id FROM users WHERE id IN (?,?)',(m['player1_user_id'],m['player2_user_id'])).fetchall()
+    with get_connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        changed=c.execute(
+            "UPDATE creator_tournament_matches SET status=?,started_at=CURRENT_TIMESTAMP,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP,attempt_count=attempt_count+1 WHERE id=? AND status!='completed'",
+            (STATUS_PLAYING,match_id),
+        ).rowcount
+        c.commit()
+    if not changed: return False,'Матч уже обрабатывается или завершён.',None
+    tele={int(r['id']):int(r['telegram_id']) for r in users}
+    from app.services.matches import play_player_match
+    try:
+        r1,r2=await play_player_match(tele[int(m['player1_user_id'])],tele[int(m['player2_user_id'])],match_type='tournament')
+    except Exception as error:
+        await _mark_match_failed(match_id,str(error)); return False,'Не удалось запустить симуляцию.',None
+    if not r1 or not r2:
+        await _mark_match_failed(match_id,'Составы не готовы к матчу.'); return False,'Не удалось запустить матч: проверьте составы.',None
+    winner=int(m['player1_user_id']) if r1.user_score>r1.opponent_score else int(m['player2_user_id'])
+    await complete_match(match_id,winner,r1.user_score,r1.opponent_score,'creator_simulation')
+    with get_connection() as c:
+        _log(c,int(m['tournament_id']),actor_user_id,'match_force_simulated',{'match_id':match_id}); c.commit()
+    return True,'Матч завершён симуляцией.',{'score1':r1.user_score,'score2':r1.opponent_score,'winner_user_id':winner}
+
+
+async def submit_manual_result(match_id:int,actor_user_id:int,score1:int,score2:int,source:str='creator_manual')->tuple[bool,str]:
+    with get_connection() as c:
+        m=c.execute('SELECT * FROM creator_tournament_matches WHERE id=?',(match_id,)).fetchone()
+        if not m: return False,'Матч не найден.'
+        if m['status']=='completed': return False,f"Матч уже завершён со счётом {m['score1']}:{m['score2']}."
+        ok,_=await _check_creator(int(m['tournament_id']),actor_user_id)
+        if not ok: return False,'Только создатель турнира может назначить результат.'
+        if not m['player1_user_id'] or not m['player2_user_id']: return False,'Оба участника матча ещё не определены.'
+    winner=int(m['player1_user_id']) if score1>score2 else int(m['player2_user_id'])
+    await complete_match(match_id,winner,score1,score2,source)
+    with get_connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        fresh=c.execute('SELECT status,score1,score2 FROM creator_tournament_matches WHERE id=?',(match_id,)).fetchone()
+        _log(c,int(m['tournament_id']),actor_user_id,'manual_result',{'match_id':match_id,'score':f'{score1}:{score2}'})
+        c.commit()
+    if fresh and fresh['status']=='completed':
+        return True,f"Результат сохранён: {fresh['score1']}:{fresh['score2']}."
+    return False,'Не удалось сохранить результат.'
+
+
+async def create_pending_result(creator_user_id:int,tournament_id:int,match_id:int,chat_id:int)->tuple[bool,str,int|None]:
+    """Создаёт ожидание ввода результата — переживает restart/redeploy (хранится в БД,
+    не в aiogram FSM). Одно активное ожидание на креатора одновременно."""
+    with get_connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        m=c.execute('SELECT * FROM creator_tournament_matches WHERE id=? AND tournament_id=?',(match_id,tournament_id)).fetchone()
+        if not m: c.rollback(); return False,'Матч не найден.',None
+        if m['status']=='completed': c.rollback(); return False,f"Матч уже завершён со счётом {m['score1']}:{m['score2']}.",None
+        t=c.execute('SELECT creator_user_id FROM creator_tournaments WHERE id=?',(tournament_id,)).fetchone()
+        if not t or int(t['creator_user_id'])!=creator_user_id: c.rollback(); return False,'Только создатель турнира может назначить результат.',None
+        c.execute("UPDATE creator_tournament_pending_results SET status='cancelled' WHERE creator_user_id=? AND status='pending'",(creator_user_id,))
+        expires=_dt(_utcnow()+timedelta(minutes=PENDING_RESULT_TTL_MINUTES))
+        cur=c.execute('INSERT INTO creator_tournament_pending_results(creator_user_id,tournament_id,match_id,chat_id,expires_at) VALUES(?,?,?,?,?)',(creator_user_id,tournament_id,match_id,chat_id,expires))
+        pending_id=int(cur.lastrowid)
+        c.commit()
+    return True,'ok',pending_id
+
+
+async def set_pending_result_prompt_message(pending_id:int,message_id:int)->None:
+    with get_connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        c.execute('UPDATE creator_tournament_pending_results SET prompt_message_id=? WHERE id=?',(message_id,pending_id))
+        c.commit()
+
+
+async def get_active_pending_result(creator_user_id:int)->dict|None:
+    with get_connection() as c:
+        row=c.execute("SELECT * FROM creator_tournament_pending_results WHERE creator_user_id=? AND status='pending' AND expires_at>CURRENT_TIMESTAMP ORDER BY id DESC LIMIT 1",(creator_user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+async def cancel_pending_result(creator_user_id:int)->bool:
+    with get_connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        changed=c.execute("UPDATE creator_tournament_pending_results SET status='cancelled' WHERE creator_user_id=? AND status='pending'",(creator_user_id,)).rowcount
+        c.commit()
+    return bool(changed)
+
+
+async def resolve_pending_result(pending_id:int)->None:
+    with get_connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        c.execute("UPDATE creator_tournament_pending_results SET status='completed' WHERE id=?",(pending_id,))
+        c.commit()

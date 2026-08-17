@@ -1,7 +1,7 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
-from app.handlers.start import send_start_screen
+from app.handlers.start import handle_start_payload, send_start_screen
 from app.services.subscription import (
     SUBSCRIPTION_CHECK_CALLBACK,
     build_subscription_debug_note,
@@ -16,7 +16,7 @@ from app.services.subscription import (
 router = Router()
 
 
-@router.callback_query(F.data == SUBSCRIPTION_CHECK_CALLBACK)
+@router.callback_query(F.data.startswith(SUBSCRIPTION_CHECK_CALLBACK))
 async def subscription_check(callback: CallbackQuery) -> None:
     if callback.from_user is None:
         await callback.answer()
@@ -37,6 +37,13 @@ async def subscription_check(callback: CallbackQuery) -> None:
                 await message.delete()
             except Exception:
                 pass
+            payload = None
+            data = str(callback.data or "")
+            prefix = f"{SUBSCRIPTION_CHECK_CALLBACK}:"
+            if data.startswith(prefix):
+                payload = data[len(prefix):].strip() or None
+            if payload and await handle_start_payload(message, callback.from_user, payload):
+                return
             await send_start_screen(message, callback.from_user)
         return
 
@@ -44,7 +51,12 @@ async def subscription_check(callback: CallbackQuery) -> None:
 
     if isinstance(message, Message):
         text = build_subscription_text(settings)
-        keyboard = build_subscription_keyboard(settings)
+        payload = None
+        data = str(callback.data or "")
+        prefix = f"{SUBSCRIPTION_CHECK_CALLBACK}:"
+        if data.startswith(prefix):
+            payload = data[len(prefix):].strip() or None
+        keyboard = build_subscription_keyboard(settings, return_payload=payload)
         banner = get_start_banner_file(settings)
         debug_note = build_subscription_debug_note(settings)
         admin_hint = f"\n\n<i>{debug_note}</i>"

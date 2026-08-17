@@ -8,11 +8,12 @@ from math import ceil
 from typing import Literal
 
 from app.database.db import get_connection
+from app.services import match_guard
 from app.services.lineup import LineupCard, get_lineup_overview
+from app.services.clan_wars import apply_clan_war_win
 from app.services.events import apply_match_event_progress
 from app.services.quests import apply_match_quest_progress
 from app.services.settings import get_int_setting
-from app.services.clan_wars import apply_clan_war_win
 from app.services.salary import format_salary
 from app.services.users import PlayerProfile, get_player_profile_by_telegram_id
 
@@ -571,18 +572,17 @@ async def enter_matchmaking(telegram_id: int, chat_id: int, message_id: int) -> 
     if not overview.is_complete or overview.average_overall is None:
         return MatchmakingResult("not_ready", "Для матча нужно заполнить все 6 слотов состава.")
 
-    if overview.salary_cap and overview.salary_total > overview.salary_cap:
-        return MatchmakingResult(
-            "not_ready",
-            f"Потолок зарплат превышен. Лимит лиги: {format_salary(overview.salary_cap)}, "
-            f"ваш состав: {format_salary(overview.salary_total)}. Замени дорогую карту.",
-        )
-
+    # NORMAL MODE (раздел ТЗ "убрать salary cap из обычного режима"): обычный матч
+    # больше не блокируется зарплатным потолком лиги — только Ranked Mode проверяет
+    # RANKED_SALARY_CAP (app/services/ranked_core.py).
     user_ovr = overview.final_overall or overview.average_overall
 
     with get_connection() as connection:
+        # RANKED MODE: match_queue теперь общая с Ranked-матчмейкингом (app.services.
+        # ranked_core), поэтому здесь везде явно фильтруем/пишем mode='normal' — иначе
+        # обычный поиск мог бы случайно подобрать/зацепить ranked-очередь.
         existing_cursor = connection.execute(
-            "SELECT id FROM match_queue WHERE user_id = ?",
+            "SELECT id FROM match_queue WHERE user_id = ? AND mode = 'normal'",
             (profile.id,),
         )
 
@@ -591,7 +591,7 @@ async def enter_matchmaking(telegram_id: int, chat_id: int, message_id: int) -> 
                 """
                 UPDATE match_queue
                 SET chat_id = ?, message_id = ?, lineup_ovr = ?, rating_points = ?, league = ?
-                WHERE user_id = ?
+                WHERE user_id = ? AND mode = 'normal'
                 """,
                 (chat_id, message_id, user_ovr, profile.rating_points, profile.league, profile.id),
             )
@@ -611,6 +611,7 @@ async def enter_matchmaking(telegram_id: int, chat_id: int, message_id: int) -> 
                 lineup_ovr
             FROM match_queue
             WHERE user_id != ?
+              AND mode = 'normal'
               AND league = ?
               AND lineup_ovr BETWEEN ? AND ?
             ORDER BY ABS(lineup_ovr - ?) ASC, ABS(rating_points - ?) ASC, created_at ASC
@@ -644,9 +645,10 @@ async def enter_matchmaking(telegram_id: int, chat_id: int, message_id: int) -> 
                     league,
                     rating_points,
                     lineup_ovr,
-                    bot_fallback_at
+                    bot_fallback_at,
+                    mode
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'normal')
                 """,
                 (
                     profile.id,
@@ -745,19 +747,30 @@ async def save_match_result(
     periods: list[MatchPeriodSummary],
     events: list[MatchEventInfo],
     mvp_title: str,
+    apply_normal_progression: bool = True,
 ) -> MatchPlayResult:
     is_win = user_score > opponent_score
     result = "win" if is_win else "loss"
-    rating_delta = calculate_rating_delta(user_ovr, opponent_ovr, is_win)
     league_before = profile.league
-    league_after, new_rating_points, rank_points_reward = apply_league_progress(
-        league=profile.league,
-        points=profile.rating_points,
-        delta=rating_delta,
-    )
-    win_coins_reward = await get_int_setting("win_coins_reward", WIN_COINS_REWARD, minimum=0, maximum=1000000)
-    loss_coins_reward = await get_int_setting("loss_coins_reward", 0, minimum=0, maximum=1000000)
-    coins_reward = win_coins_reward if is_win else loss_coins_reward
+
+    # Stronghold has its own progression and reward economy. It must never leak
+    # into the normal league/rating/coin loop. Other modes keep the old behavior.
+    if apply_normal_progression:
+        rating_delta = calculate_rating_delta(user_ovr, opponent_ovr, is_win)
+        league_after, new_rating_points, rank_points_reward = apply_league_progress(
+            league=profile.league,
+            points=profile.rating_points,
+            delta=rating_delta,
+        )
+        win_coins_reward = await get_int_setting("win_coins_reward", WIN_COINS_REWARD, minimum=0, maximum=1000000)
+        loss_coins_reward = await get_int_setting("loss_coins_reward", 0, minimum=0, maximum=1000000)
+        coins_reward = win_coins_reward if is_win else loss_coins_reward
+    else:
+        rating_delta = 0
+        league_after = profile.league
+        new_rating_points = profile.rating_points
+        rank_points_reward = 0
+        coins_reward = 0
 
     with get_connection() as connection:
         cursor = connection.execute(
@@ -815,29 +828,30 @@ async def save_match_result(
             [(match_id, event.period_title, event.time_text, event.event_type, event.description) for event in events],
         )
 
-        connection.execute(
-            """
-            UPDATE users
-            SET matches_played = matches_played + 1,
-                wins = wins + ?,
-                losses = losses + ?,
-                goals_scored = goals_scored + ?,
-                goals_allowed = goals_allowed + ?,
-                rating_points = ?,
-                league = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (
-                1 if is_win else 0,
-                0 if is_win else 1,
-                user_score,
-                opponent_score,
-                new_rating_points,
-                league_after,
-                profile.id,
-            ),
-        )
+        if apply_normal_progression:
+            connection.execute(
+                """
+                UPDATE users
+                SET matches_played = matches_played + 1,
+                    wins = wins + ?,
+                    losses = losses + ?,
+                    goals_scored = goals_scored + ?,
+                    goals_allowed = goals_allowed + ?,
+                    rating_points = ?,
+                    league = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    1 if is_win else 0,
+                    0 if is_win else 1,
+                    user_score,
+                    opponent_score,
+                    new_rating_points,
+                    league_after,
+                    profile.id,
+                ),
+            )
 
         if coins_reward > 0:
             connection.execute(
@@ -865,21 +879,21 @@ async def save_match_result(
 
         connection.commit()
 
-    await apply_match_quest_progress(
-        user_id=profile.id,
-        is_win=is_win,
-        goals_scored=user_score,
-        goals_allowed=opponent_score,
-    )
-    await apply_match_event_progress(
-        user_id=profile.id,
-        is_win=is_win,
-        goals_scored=user_score,
-        goals_allowed=opponent_score,
-    )
-
-    if is_win:
-        await apply_clan_war_win(profile.id)
+    if apply_normal_progression:
+        await apply_match_quest_progress(
+            user_id=profile.id,
+            is_win=is_win,
+            goals_scored=user_score,
+            goals_allowed=opponent_score,
+        )
+        await apply_match_event_progress(
+            user_id=profile.id,
+            is_win=is_win,
+            goals_scored=user_score,
+            goals_allowed=opponent_score,
+        )
+        if is_win:
+            await apply_clan_war_win(profile.id)
 
     return MatchPlayResult(
         success=True,
@@ -908,27 +922,90 @@ async def save_match_result(
 
 
 async def play_quick_match(telegram_id: int) -> MatchPlayResult:
+    """ЕДИНЫЙ ГЛОБАЛЬНЫЙ MATCH LOCK: единственная точка, где обычный режим реально
+    создаёт и сохраняет результат матча (см. app.handlers.matches — весь путь
+    "quick match"/bot-fallback после ожидания в очереди сходится сюда). Раньше
+    здесь НЕ было ни одного вызова match_guard — обычный режим мог быть запущен
+    параллельно с Ranked/Stronghold/Clan War 2.0 без какой-либо защиты."""
     profile = await get_player_profile_by_telegram_id(telegram_id)
 
     if profile is None:
         return MatchPlayResult(False, "Открой игру через /start.")
 
-    overview = await get_lineup_overview(profile.id)
+    lock = await match_guard.acquire_player_match_lock(profile.id, "normal")
+    if not lock.acquired:
+        detail = await match_guard.describe_active_match_short(lock.existing) if lock.existing else ""
+        return MatchPlayResult(False, f"У вас уже есть активный матч. Дождитесь его завершения. {detail}".strip())
 
+    try:
+        overview = await get_lineup_overview(profile.id)
+
+        if not overview.is_complete or overview.average_overall is None:
+            await match_guard.cancel_match(profile.id, reason="NORMAL_MATCH_LINEUP_INCOMPLETE")
+            return MatchPlayResult(False, "Для матча нужно заполнить все 6 слотов состава.")
+
+        # NORMAL MODE: см. комментарий в enter_matchmaking() — cap больше не блокирует
+        # обычный матч.
+        lineup_cards = [card for card in overview.slots.values() if card is not None]
+        user_ovr = overview.final_overall or overview.average_overall
+        opponent_ovr = await compute_bot_opponent_ovr(user_ovr)
+        opponent_name = random.choice(BOT_NAMES)
+        user_score, opponent_score, is_overtime, is_shootout, periods, events = build_simulation(
+            user_ovr=user_ovr,
+            opponent_ovr=opponent_ovr,
+            lineup_cards=lineup_cards,
+            opponent_name=opponent_name,
+        )
+        mvp_title = choose_scorer(lineup_cards, "Игрок матча") if user_score > opponent_score else f"Лидер {opponent_name}"
+
+        result = await save_match_result(
+            profile=profile,
+            opponent_user_id=None,
+            opponent_name=opponent_name,
+            opponent_type="bot",
+            user_ovr=user_ovr,
+            opponent_ovr=opponent_ovr,
+            user_score=user_score,
+            opponent_score=opponent_score,
+            is_overtime=is_overtime,
+            is_shootout=is_shootout,
+            periods=periods,
+            events=events,
+            mvp_title=mvp_title,
+        )
+    except Exception:
+        await match_guard.cancel_match(profile.id, reason="NORMAL_MATCH_ERROR")
+        raise
+
+    await match_guard.finalize_match(profile.id, match_id=result.match_id, reason="COMPLETED")
+    return result
+
+
+async def play_stronghold_match(telegram_id: int, opponent_ovr: int, opponent_name: str) -> MatchPlayResult:
+    """Матч-нода THE STRONGHOLD (Fortress/Endless Siege): фиксированный OVR соперника,
+    повышенный зарплатный потолок события вместо обычного лигового.
+
+    Переиспользует существующий движок симуляции (`build_simulation`) и запись результата
+    (`save_match_result`) — отдельный "фейковый" симулятор не создаётся.
+    """
+    from app.services.salary import STRONGHOLD_SALARY_CAP
+
+    profile = await get_player_profile_by_telegram_id(telegram_id)
+    if profile is None:
+        return MatchPlayResult(False, "Открой игру через /start.")
+
+    overview = await get_lineup_overview(profile.id)
     if not overview.is_complete or overview.average_overall is None:
         return MatchPlayResult(False, "Для матча нужно заполнить все 6 слотов состава.")
 
-    if overview.salary_cap and overview.salary_total > overview.salary_cap:
+    if overview.salary_total > STRONGHOLD_SALARY_CAP:
         return MatchPlayResult(
             False,
-            f"Потолок зарплат превышен. Лимит лиги: {format_salary(overview.salary_cap)}, "
-            f"ваш состав: {format_salary(overview.salary_total)}. Замени дорогую карту.",
+            f"Зарплатный потолок THE STRONGHOLD превышен ({format_salary(STRONGHOLD_SALARY_CAP)}).",
         )
 
     lineup_cards = [card for card in overview.slots.values() if card is not None]
     user_ovr = overview.final_overall or overview.average_overall
-    opponent_ovr = await compute_bot_opponent_ovr(user_ovr)
-    opponent_name = random.choice(BOT_NAMES)
     user_score, opponent_score, is_overtime, is_shootout, periods, events = build_simulation(
         user_ovr=user_ovr,
         opponent_ovr=opponent_ovr,
@@ -941,7 +1018,7 @@ async def play_quick_match(telegram_id: int) -> MatchPlayResult:
         profile=profile,
         opponent_user_id=None,
         opponent_name=opponent_name,
-        opponent_type="bot",
+        opponent_type="stronghold",
         user_ovr=user_ovr,
         opponent_ovr=opponent_ovr,
         user_score=user_score,
@@ -951,77 +1028,102 @@ async def play_quick_match(telegram_id: int) -> MatchPlayResult:
         periods=periods,
         events=events,
         mvp_title=mvp_title,
+        apply_normal_progression=False,
     )
 
 
 async def play_player_match(
     first_telegram_id: int,
     second_telegram_id: int,
+    *,
+    match_type: str = "normal_pvp",
 ) -> tuple[MatchPlayResult | None, MatchPlayResult | None]:
+    """ЕДИНАЯ точка для ЛЮБОГО синхронного PvP-матча двух реальных пользователей —
+    обычный матчмейкинг И турниры (app.services.creator_tournaments) вызывают
+    именно эту функцию, поэтому защита здесь автоматически покрывает оба режима
+    (и любой будущий режим, который начнёт её использовать).
+
+    Оба участника блокируются атомарно, В СТАБИЛЬНОМ порядке по возрастанию
+    user_id (см. match_guard.acquire_two_player_match_lock) — независимо от того,
+    кто "первый" в вызове. Если кто-то из двоих уже занят другим матчем (в ЛЮБОМ
+    режиме), матч не создаётся вовсе: не для одного, не для другого — никто не
+    остаётся заблокированным."""
     first_profile = await get_player_profile_by_telegram_id(first_telegram_id)
     second_profile = await get_player_profile_by_telegram_id(second_telegram_id)
 
     if first_profile is None or second_profile is None:
         return None, None
 
-    first_overview = await get_lineup_overview(first_profile.id)
-    second_overview = await get_lineup_overview(second_profile.id)
-
-    if (
-        not first_overview.is_complete
-        or first_overview.average_overall is None
-        or not second_overview.is_complete
-        or second_overview.average_overall is None
-    ):
+    lock = await match_guard.acquire_two_player_match_lock(first_profile.id, second_profile.id, match_type)
+    if not lock.success:
         return None, None
 
-    first_cards = [card for card in first_overview.slots.values() if card is not None]
-    first_ovr = first_overview.final_overall or first_overview.average_overall
-    second_ovr = second_overview.final_overall or second_overview.average_overall
-    first_score, second_score, is_overtime, is_shootout, periods, events = build_simulation(
-        user_ovr=first_ovr,
-        opponent_ovr=second_ovr,
-        lineup_cards=first_cards,
-        opponent_name=second_profile.nickname,
-    )
-    first_mvp = choose_scorer(first_cards, "Игрок матча") if first_score > second_score else f"Лидер {second_profile.nickname}"
-    second_mvp = f"Лидер {second_profile.nickname}" if first_score <= second_score else choose_scorer(first_cards, "Игрок матча")
-    second_events = mirror_events_for_second_player(
-        events,
-        first_player_name=first_profile.nickname,
-        second_player_name=second_profile.nickname,
-    )
+    try:
+        first_overview = await get_lineup_overview(first_profile.id)
+        second_overview = await get_lineup_overview(second_profile.id)
 
-    first_result = await save_match_result(
-        profile=first_profile,
-        opponent_user_id=second_profile.id,
-        opponent_name=second_profile.nickname,
-        opponent_type="player",
-        user_ovr=first_ovr,
-        opponent_ovr=second_ovr,
-        user_score=first_score,
-        opponent_score=second_score,
-        is_overtime=is_overtime,
-        is_shootout=is_shootout,
-        periods=periods,
-        events=events,
-        mvp_title=first_mvp,
-    )
-    second_result = await save_match_result(
-        profile=second_profile,
-        opponent_user_id=first_profile.id,
-        opponent_name=first_profile.nickname,
-        opponent_type="player",
-        user_ovr=second_ovr,
-        opponent_ovr=first_ovr,
-        user_score=second_score,
-        opponent_score=first_score,
-        is_overtime=is_overtime,
-        is_shootout=is_shootout,
-        periods=mirror_periods(periods),
-        events=second_events,
-        mvp_title=second_mvp,
-    )
+        if (
+            not first_overview.is_complete
+            or first_overview.average_overall is None
+            or not second_overview.is_complete
+            or second_overview.average_overall is None
+        ):
+            await match_guard.release_two_player_match_lock(lock, reason="PVP_LINEUP_INCOMPLETE")
+            return None, None
+
+        first_cards = [card for card in first_overview.slots.values() if card is not None]
+        first_ovr = first_overview.final_overall or first_overview.average_overall
+        second_ovr = second_overview.final_overall or second_overview.average_overall
+        first_score, second_score, is_overtime, is_shootout, periods, events = build_simulation(
+            user_ovr=first_ovr,
+            opponent_ovr=second_ovr,
+            lineup_cards=first_cards,
+            opponent_name=second_profile.nickname,
+        )
+        first_mvp = choose_scorer(first_cards, "Игрок матча") if first_score > second_score else f"Лидер {second_profile.nickname}"
+        second_mvp = f"Лидер {second_profile.nickname}" if first_score <= second_score else choose_scorer(first_cards, "Игрок матча")
+        second_events = mirror_events_for_second_player(
+            events,
+            first_player_name=first_profile.nickname,
+            second_player_name=second_profile.nickname,
+        )
+
+        first_result = await save_match_result(
+            profile=first_profile,
+            opponent_user_id=second_profile.id,
+            opponent_name=second_profile.nickname,
+            opponent_type="player",
+            user_ovr=first_ovr,
+            opponent_ovr=second_ovr,
+            user_score=first_score,
+            opponent_score=second_score,
+            is_overtime=is_overtime,
+            is_shootout=is_shootout,
+            periods=periods,
+            events=events,
+            mvp_title=first_mvp,
+        )
+        second_result = await save_match_result(
+            profile=second_profile,
+            opponent_user_id=first_profile.id,
+            opponent_name=first_profile.nickname,
+            opponent_type="player",
+            user_ovr=second_ovr,
+            opponent_ovr=first_ovr,
+            user_score=second_score,
+            opponent_score=first_score,
+            is_overtime=is_overtime,
+            is_shootout=is_shootout,
+            periods=mirror_periods(periods),
+            events=second_events,
+            mvp_title=second_mvp,
+        )
+    except Exception:
+        await match_guard.release_two_player_match_lock(lock, reason="PVP_MATCH_ERROR")
+        raise
+
+    await match_guard.finalize_match(first_profile.id, match_id=first_result.match_id, reason="COMPLETED")
+    await match_guard.finalize_match(second_profile.id, match_id=second_result.match_id, reason="COMPLETED")
 
     return first_result, second_result
 

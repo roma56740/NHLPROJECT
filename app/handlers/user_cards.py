@@ -16,6 +16,7 @@ from app.keyboards.user_cards import (
     build_user_cards_main_keyboard,
 )
 from app.services.community import get_user_id_by_telegram_id
+from app.services.card_sorting import set_user_card_sort_order
 from app.services.quick_sell import (
     get_sell_preview,
     quick_sell_bulk,
@@ -165,6 +166,7 @@ async def show_cards_page(callback: CallbackQuery, page: int) -> None:
             search=cards_page.search,
             position=cards_page.position,
             rarity=cards_page.rarity,
+            sort_order=cards_page.sort_order,
         ),
     )
 
@@ -239,8 +241,22 @@ async def user_cards_button(message: Message, state: FSMContext) -> None:
             search=cards_page.search,
             position=cards_page.position,
             rarity=cards_page.rarity,
+            sort_order=cards_page.sort_order,
         ),
     )
+
+
+@router.callback_query(F.data.startswith("user_cards:sort:"))
+async def user_cards_sort(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    profile = await get_player_profile_by_telegram_id(callback.from_user.id)
+    if profile is None:
+        await callback.answer("Открой профиль через /start", show_alert=True)
+        return
+    sort_order = callback.data.split(":")[-1] if callback.data else "ovr_desc"
+    await set_user_card_sort_order(profile.id, sort_order)
+    await show_cards_page(callback, page=1)
+    await callback.answer("Сортировка сохранена")
 
 
 @router.callback_query(F.data == "user_cards:main")
@@ -457,6 +473,7 @@ async def user_cards_search_value(message: Message, state: FSMContext) -> None:
         search=cards_page.search,
         position=cards_page.position,
         rarity=cards_page.rarity,
+        sort_order=cards_page.sort_order,
     )
 
     if chat_id and message_id:

@@ -592,7 +592,8 @@ async def admin_creators_weekly(callback: CallbackQuery, state: FSMContext) -> N
     result = await pay_weekly_rewards()
     await show_admin_main_cb(callback)
     await callback.answer(
-        f"Начислено {result.creators_count} креаторам: {format_int(result.total_coins)} монет, {result.total_packs} паков",
+        f"Ручная недельная выплата: {result.creators_count} креаторам, "
+        f"{format_int(result.total_coins)} монет, {result.total_packs} паков",
         show_alert=True,
     )
 

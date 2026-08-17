@@ -10,7 +10,8 @@ __pycache__/
 *.pyc
 
 # Рантайм-данные бота (база, рендеры, загрузки админов)
-data/
+data/*
+!data/ranked_bot_nicknames.txt
 assets/uploads/
 
 # IDE

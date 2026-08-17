@@ -35,6 +35,20 @@ ADMIN_PACK_IMAGE_TEXT = """
 Лучше использовать PNG/JPG с красивым изображением набора карточек.
 """.strip()
 
+ADMIN_PACK_ANIMATION_TEXT = """
+<b>🎬 Видео открытия пака</b>
+
+Отправь видео длительностью до <b>10 секунд</b>.
+
+Поддерживаются обычное видео Telegram и видеофайл MP4/MOV/WEBM. При открытии пака ролик показывается первым, через 10 секунд это же сообщение заменяется выпавшей карточкой.
+""".strip()
+
+ADMIN_PACK_BAD_ANIMATION_TEXT = """
+<b>🎬 Видео не принято</b>
+
+Отправь видео длительностью не более 10 секунд или видеофайл MP4/MOV/WEBM.
+""".strip()
+
 ADMIN_PACK_NAME_TEXT = """
 <b>🎁 Название пака</b>
 
@@ -253,68 +267,7 @@ def build_pack_opening_start_text(result: PackOpeningResult) -> str:
 🎁 Пак: <b>{safe(result.pack_name)}</b>
 🃏 Внутри: <b>{cards_count}</b> {cards_word}
 
-Сейчас начнётся раскрытие карточек.
-Сначала появится дивизион, затем команда, потом национальность игрока.
-""".strip()
-
-
-def build_pack_animation_division_text(result: PackOpeningResult, reward, index: int, total: int, division_name: str | None = None) -> str:
-    division_title = division_name or getattr(reward, "division_name", None) or "Без дивизиона"
-    return f"""
-<b>✨ Открытие пака</b>
-
-🎁 <b>{safe(result.pack_name)}</b>
-🃏 Карточка <b>{index}/{total}</b>
-
-┏━━━━━━━━━━━━━━━━━━━━┓
-┃ 🏆 ДИВИЗИОН
-┃ <b>{safe(division_title)}</b>
-┗━━━━━━━━━━━━━━━━━━━━┛
-
-Команда скоро появится...
-""".strip()
-
-
-def build_pack_animation_team_text(result: PackOpeningResult, reward, index: int, total: int, division_name: str | None = None) -> str:
-    division_title = division_name or getattr(reward, "division_name", None) or "Без дивизиона"
-    return f"""
-<b>✨ Открытие пака</b>
-
-🎁 <b>{safe(result.pack_name)}</b>
-🃏 Карточка <b>{index}/{total}</b>
-
-┏━━━━━━━━━━━━━━━━━━━━┓
-┃ 🏆 Дивизион
-┃ <b>{safe(division_title)}</b>
-┣━━━━━━━━━━━━━━━━━━━━┫
-┃ 🏒 КОМАНДА
-┃ <b>{safe(reward.team)}</b>
-┗━━━━━━━━━━━━━━━━━━━━┛
-
-Страна игрока раскрывается...
-""".strip()
-
-
-def build_pack_animation_country_text(result: PackOpeningResult, reward, index: int, total: int, division_name: str | None = None) -> str:
-    division_title = division_name or getattr(reward, "division_name", None) or "Без дивизиона"
-    return f"""
-<b>✨ Открытие пака</b>
-
-🎁 <b>{safe(result.pack_name)}</b>
-🃏 Карточка <b>{index}/{total}</b>
-
-┏━━━━━━━━━━━━━━━━━━━━┓
-┃ 🏆 Дивизион
-┃ <b>{safe(division_title)}</b>
-┣━━━━━━━━━━━━━━━━━━━━┫
-┃ 🏒 Команда
-┃ <b>{safe(reward.team)}</b>
-┣━━━━━━━━━━━━━━━━━━━━┫
-┃ 🌍 НАЦИОНАЛЬНОСТЬ
-┃ <b>{safe(reward.country)}</b>
-┗━━━━━━━━━━━━━━━━━━━━┛
-
-Финальное раскрытие...
+Смотри видео открытия. Через 10 секунд сообщение превратится в выпавшую карточку.
 """.strip()
 
 
@@ -427,11 +380,22 @@ def build_admin_packs_page_text(page: AdminPacksPage) -> str:
 """.strip()
 
 
-def build_admin_pack_profile_text(pack: AdminPackDetails) -> str:
+def build_admin_pack_profile_text(pack: AdminPackDetails, animation_meta=None) -> str:
     status = "✅ Активен" if pack.active else "⏸ Выключен"
     shop = "🛒 В магазине" if pack.is_shop_available else "🎯 Только выдача и награды"
     starter = "\n🌟 Стартовый пак" if pack.is_starter else ""
     free_note = "\n🎟 Бесплатный пак открывается один раз" if pack.price_amount <= 0 else ""
+
+    if animation_meta is not None and animation_meta.video_path:
+        enabled_text = "включена" if animation_meta.enabled else "выключена (fallback на карту сразу)"
+        size_text = f"{animation_meta.file_size / 1024 / 1024:.1f} МБ" if animation_meta.file_size else "—"
+        animation_block = (
+            f"🎬 Видео открытия: <b>загружено</b>, {enabled_text}\n"
+            f"   Длительность: {animation_meta.duration_seconds or '—'} c · Размер: {size_text}\n"
+            f"   Загружено: {animation_meta.uploaded_at or '—'} (админ {animation_meta.uploaded_by or '—'})"
+        )
+    else:
+        animation_block = "🎬 Видео открытия: <b>❌ не загружено</b> (fallback — карта сразу) · макс. 10 сек"
 
     return f"""
 <b>🎁 {safe(pack.name)}</b>
@@ -442,6 +406,7 @@ def build_admin_pack_profile_text(pack: AdminPackDetails) -> str:
 🃏 Карт внутри: <b>{pack.cards_count}</b>
 🏒 Карт в розыгрыше: <b>{pack.selected_cards_count}</b>
 💰 Цена: <b>{build_pack_price_text(pack)}</b>
+{animation_block}
 {status}
 {shop}{starter}{free_note}
 

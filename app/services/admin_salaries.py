@@ -151,8 +151,8 @@ async def set_salary_by_overall_range(min_ovr: int, max_ovr: int, raw_salary: st
     salary = parse_salary(raw_salary)
     if salary is None:
         return False, "Зарплата не распознана. Пример: 5.5", 0
-    if min_ovr < 1 or max_ovr > 99 or min_ovr > max_ovr:
-        return False, "Диапазон OVR должен быть от 1 до 99. Пример: 90-93 5.5", 0
+    if min_ovr < 1 or max_ovr > 110 or min_ovr > max_ovr:
+        return False, "Диапазон OVR должен быть от 1 до 110. Пример: 90-93 5.5", 0
     with get_connection() as connection:
         cursor = connection.execute(
             "UPDATE cards SET salary = ?, updated_at = CURRENT_TIMESTAMP WHERE overall BETWEEN ? AND ?",

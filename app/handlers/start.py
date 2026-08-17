@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from html import escape
 
 from aiogram import Router
@@ -6,59 +8,17 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, User
 
-from app.keyboards.reply import build_admin_main_keyboard, build_user_main_keyboard
-from app.services.currencies import format_currency_amount
-from app.services.subscription import get_start_banner_file, get_subscription_settings
-from app.services.users import PlayerProfile, register_or_update_player
-from app.utils.users import is_admin
+from app.handlers.menu import send_home_photo
+from app.services.users import register_or_update_player
+from app.services.creator_tournaments import (
+    get_tournament_by_invite_token,
+    is_tournament_participant,
+    parse_invite_payload,
+    register as register_creator_tournament,
+)
 
 
 router = Router()
-
-
-USER_START_TEXT = """
-<b>🏒 NHL Card Bot</b>
-
-{status_line}
-
-👤 Игрок: <b>{nickname}</b>
-🏆 Лига: <b>{league}</b>
-⭐ Очки: <b>{rating_points}</b>
-🎟 Hockey Pass: <b>{hockey_pass_level} уровень</b>
-
-<b>Баланс</b>
-{balances}
-
-🃏 Собирай карточки игроков
-🎁 Открывай паки и получай редкие находки
-🧩 Собирай сильный состав
-🏆 Побеждай в матчах и поднимайся в рейтинге
-
-Выбери раздел ниже и начни путь к чемпионству.
-""".strip()
-
-
-ADMIN_START_TEXT = """
-<b>🏒 NHL Card Bot — управление игрой</b>
-
-{status_line}
-
-👤 Профиль: <b>{nickname}</b>
-🏆 Лига: <b>{league}</b>
-⭐ Очки: <b>{rating_points}</b>
-
-<b>Баланс</b>
-{balances}
-
-🃏 Карточки и коллекции
-🎁 Паки и награды
-🛒 Магазин и ротации
-👥 Игроки и балансы
-🎯 Задания и Hockey Pass
-🏆 Лиги, события и рейтинг
-
-Выбери нужный раздел ниже.
-""".strip()
 
 
 async def delete_start_message(message: Message) -> None:
@@ -68,52 +28,65 @@ async def delete_start_message(message: Message) -> None:
         pass
 
 
-def build_balances_text(profile: PlayerProfile) -> str:
-    if not profile.balances:
-        return "Пока пусто"
-
-    return "\n".join(format_currency_amount(balance) for balance in profile.balances)
-
-
-def build_start_text(profile: PlayerProfile, is_user_admin: bool) -> str:
-    status_line = "✅ Профиль создан. Добро пожаловать на лёд!" if profile.is_new else "✅ Главное меню открыто. Прогресс сохранён!"
-    template = ADMIN_START_TEXT if is_user_admin else USER_START_TEXT
-
-    return template.format(
-        status_line=status_line,
-        nickname=escape(profile.nickname, quote=False),
-        league=escape(profile.league, quote=False),
-        rating_points=profile.rating_points,
-        hockey_pass_level=profile.hockey_pass_level,
-        balances=build_balances_text(profile),
-    )
-
-
 async def send_start_screen(message: Message, telegram_user: User, delete_trigger: bool = False) -> None:
-    profile = await register_or_update_player(telegram_user)
-    is_user_admin = is_admin(telegram_user.id)
-
-    text = build_start_text(profile, is_user_admin)
-    keyboard = build_admin_main_keyboard(telegram_user.id) if is_user_admin else build_user_main_keyboard()
+    # Регистрация/обновление профиля остаётся прежней; меняется только навигация:
+    # вместо нижней ReplyKeyboard отправляется одна фотография с 12 inline-кнопками.
+    await register_or_update_player(telegram_user)
 
     if delete_trigger:
         await delete_start_message(message)
 
-    subscription_settings = await get_subscription_settings()
-    banner = get_start_banner_file(subscription_settings)
+    await send_home_photo(message, telegram_user.id, remove_reply_keyboard=True)
 
-    if banner is not None:
-        await message.answer_photo(
-            photo=banner,
-            caption=text,
-            reply_markup=keyboard,
-        )
-        return
 
-    await message.answer(
-        text,
-        reply_markup=keyboard,
+def _start_payload(message: Message) -> str | None:
+    text = (message.text or "").strip()
+    parts = text.split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else None
+
+
+def _creator_invite_text(meta: dict, join_status: str) -> str:
+    status = str(meta.get("status") or "registration")
+    status_label = {
+        "registration": "🟢 Регистрация открыта",
+        "active": "🟡 Турнир уже идёт",
+        "completed": "✅ Турнир завершён",
+    }.get(status, status)
+    return (
+        f"<b>🏆 {escape(str(meta.get('title') or 'Турнир'), quote=False)}</b>\n\n"
+        f"{escape(str(meta.get('description') or ''), quote=False)}\n\n"
+        f"👤 Создатель: <b>{escape(str(meta.get('creator_nickname') or 'Creator'), quote=False)}</b>\n"
+        f"👥 Участники: <b>{int(meta.get('participants_count') or 0)}/{int(meta.get('capacity') or 0)}</b>\n"
+        f"⏱ Время на матч: <b>{int(meta.get('round_duration_minutes') or 0)} мин.</b>\n"
+        f"{status_label}\n\n{join_status}"
     )
+
+
+async def handle_start_payload(message: Message, telegram_user: User, payload: str | None) -> bool:
+    invite_token = parse_invite_payload(payload)
+    if not invite_token:
+        return False
+    profile = await register_or_update_player(telegram_user)
+    meta = await get_tournament_by_invite_token(invite_token)
+    if not meta:
+        await message.answer("❌ Ссылка на турнир недействительна или была отключена.")
+        return True
+    tid = int(meta["id"])
+    already = await is_tournament_participant(tid, profile.id)
+    if already:
+        join_status = "✅ Ты уже зарегистрирован в этом турнире."
+    else:
+        ok, msg, started = await register_creator_tournament(tid, profile.id)
+        join_status = ("✅ " if ok else "❌ ") + msg
+        if ok and started:
+            join_status += "\n🏒 Турнир заполнен и автоматически запущен."
+    refreshed = await get_tournament_by_invite_token(invite_token)
+    if refreshed:
+        meta = refreshed
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📊 Открыть сетку", callback_data=f"ct:view:{tid}")]])
+    await message.answer(_creator_invite_text(meta, join_status), reply_markup=kb)
+    return True
 
 
 @router.message(CommandStart())
@@ -122,4 +95,9 @@ async def start_command(message: Message, state: FSMContext) -> None:
         return
 
     await state.clear()
-    await send_start_screen(message, message.from_user, delete_trigger=True)
+    payload = _start_payload(message)
+    if payload:
+        await delete_start_message(message)
+        if await handle_start_payload(message, message.from_user, payload):
+            return
+    await send_start_screen(message, message.from_user, delete_trigger=not bool(payload))

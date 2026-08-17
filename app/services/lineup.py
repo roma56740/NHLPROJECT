@@ -4,6 +4,7 @@ from math import ceil
 from app.database.db import get_connection
 from app.services.salary import league_cap
 from app.services.chemistry import ChemistryBonus, ChemistryCard, calculate_chemistry
+from app.services.card_sorting import get_user_card_sort_order, order_by_overall
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class LineupCardsPage:
     page: int
     pages_count: int
     total_count: int
+    sort_order: str = "ovr_desc"
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,25 @@ def row_to_lineup_card(row) -> LineupCard:
         collection_code=row["collection_code"],
         salary=int(row["salary"] or 0) if "salary" in row.keys() else 0,
     )
+
+
+async def lineup_has_collection_card(user_id: int, collection_code: str) -> bool:
+    """THE STRONGHOLD и подобные режимы: требует минимум 1 карту нужной коллекции в составе."""
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM user_cards
+            JOIN cards ON cards.id = user_cards.card_id
+            JOIN collections ON collections.id = cards.collection_id
+            WHERE user_cards.user_id = ?
+              AND user_cards.is_in_lineup = 1
+              AND collections.code = ?
+            LIMIT 1
+            """,
+            (user_id, collection_code),
+        ).fetchone()
+    return row is not None
 
 
 async def get_user_league(user_id: int) -> str:
@@ -180,7 +201,7 @@ async def get_lineup_overview(user_id: int) -> LineupOverview:
         chemistry_bonuses=chemistry_result.bonuses,
         is_complete=filled_count == len(LINEUP_SLOT_ORDER),
         salary_total=salary_total,
-        salary_cap=league_cap(await get_user_league(user_id)),
+        salary_cap=0,
     )
 
 
@@ -194,6 +215,8 @@ async def get_lineup_cards_page(
         return LineupCardsPage(cards=[], slot_code="G", page=1, pages_count=1, total_count=0)
 
     slot = get_slot_info(slot_code)
+    sort_order = await get_user_card_sort_order(user_id)
+    order_sql = order_by_overall(sort_order, card_alias="cards")
 
     with get_connection() as connection:
         forbidden_cursor = connection.execute(
@@ -258,7 +281,7 @@ async def get_lineup_cards_page(
               AND cards.position = ?
               AND (user_cards.is_in_lineup = 0 OR user_cards.lineup_slot = ?)
               {forbidden_sql}
-            ORDER BY cards.overall DESC, cards.name ASC, user_cards.id DESC
+            ORDER BY {order_sql}, user_cards.id DESC
             LIMIT ? OFFSET ?
             """,
             [*params, per_page, offset],
@@ -271,6 +294,7 @@ async def get_lineup_cards_page(
         page=safe_page,
         pages_count=pages_count,
         total_count=total_count,
+        sort_order=sort_order,
     )
 
 

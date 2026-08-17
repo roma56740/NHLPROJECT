@@ -6,10 +6,14 @@ from app.services.community import (
     CommunityPlayersPage,
     PublicPlayerProfile,
     TradeCardChoicesPage,
+    TradeCosmeticChoicesPage,
+    TradeCosmeticsPage,
     TradeOffersPage,
     TradeOfferProfile,
     TradeUserCardsPage,
 )
+from app.services.card_sorting import sort_label
+from app.services.war2_cosmetics import cosmetic_type_title
 
 COMMUNITY_MAIN_TEXT = """
 <b>🤝 Сообщество</b>
@@ -28,12 +32,14 @@ PLAYERS_SEARCH_TEXT = """
 TRADE_MAIN_TEXT = """
 <b>🔁 Рынок обменов</b>
 
-Создавай предложения, выбирай карточки и обменивайся с другими игроками.
+Создавай предложения и обменивайся с другими игроками.
 
 Можно обменивать:
-• карточки на карточки;
-• карточки на валюту;
-• несколько карточек на одну или несколько.
+• карточки и косметику на карточки;
+• карточки и косметику на косметику;
+• карточки и косметику на валюту.
+
+Каждая рамка, приписка, фон и титул — отдельный трейдабл-экземпляр. Экипированные и установленные на карты предметы сначала нужно снять.
 """.strip()
 
 TRADE_DIRECT_SEARCH_TEXT = """
@@ -53,9 +59,9 @@ TRADE_DIRECT_PLAYERS_TEXT = """
 TRADE_CREATE_TEXT = """
 <b>➕ Новый обмен</b>
 
-Сначала выбери карточки, которые готов отдать.
+Сначала выбери карточки и/или косметику, которые готов отдать.
 
-Карточки из состава и заблокированные карточки не участвуют в обменах.
+Карточки из состава и заблокированные карточки не участвуют в обменах. Косметика должна быть снята с профиля и не установлена на карту.
 """.strip()
 
 TRADE_WANTED_TEXT = """
@@ -74,6 +80,12 @@ TRADE_WANTED_CARDS_TEXT = """
 <b>🎴 Карточки для обмена</b>
 
 Выбери карточки, на которые готов обменяться.
+""".strip()
+
+TRADE_WANTED_COSMETICS_TEXT = """
+<b>🎨 Косметика для обмена</b>
+
+Выбери тип косметики, который хочешь получить. При принятии передаётся один свободный экземпляр каждого выбранного предмета.
 """.strip()
 
 CLANS_MAIN_TEXT = """
@@ -188,6 +200,7 @@ def build_trade_user_cards_page_text(page: TradeUserCardsPage) -> str:
     lines = [
         "<b>🎴 Выбери карточки для обмена</b>",
         f"Выбрано: <b>{len(page.selected_ids)}/3</b>",
+        f"Сортировка: <b>{sort_label(page.sort_order)}</b>",
         "",
     ]
     if not page.cards:
@@ -204,6 +217,7 @@ def build_trade_card_choices_page_text(page: TradeCardChoicesPage) -> str:
     lines = [
         "<b>🎯 Выбери желаемые карточки</b>",
         f"Выбрано: <b>{len(page.selected_card_ids)}/3</b>",
+        f"Сортировка: <b>{sort_label(page.sort_order)}</b>",
         "",
     ]
     if not page.cards:
@@ -215,6 +229,41 @@ def build_trade_card_choices_page_text(page: TradeCardChoicesPage) -> str:
     lines.append(f"Страница {page.page}/{page.pages_count}")
     return "\n".join(lines)
 
+
+
+def _format_cosmetic_line(item) -> str:
+    badge = f" · [{escape(item.badge_text, quote=False)}]" if item.badge_text else ""
+    return f"🎨 <b>{escape(item.title, quote=False)}</b>{badge} · {cosmetic_type_title(item.type)} · {item.rarity}"
+
+
+def build_trade_cosmetics_page_text(page: TradeCosmeticsPage) -> str:
+    lines = [
+        "<b>🎨 Выбери косметику для обмена</b>",
+        f"Выбрано экземпляров: <b>{len(page.selected_ids)}/3</b>",
+        "",
+    ]
+    if not page.items:
+        lines.append("Свободной косметики нет. Сними предмет с профиля или карты, чтобы обменять его.")
+    else:
+        for item in page.items:
+            lines.append(_format_cosmetic_line(item) + f" · экземпляр #{item.id}")
+    lines.extend(["", f"Страница {page.page}/{page.pages_count}"])
+    return "\n".join(lines)
+
+
+def build_trade_cosmetic_choices_page_text(page: TradeCosmeticChoicesPage) -> str:
+    lines = [
+        "<b>🎯 Выбери желаемую косметику</b>",
+        f"Выбрано: <b>{len(page.selected_item_ids)}/3</b>",
+        "",
+    ]
+    if not page.items:
+        lines.append("Косметика не найдена.")
+    else:
+        for item in page.items:
+            lines.append(_format_cosmetic_line(item))
+    lines.extend(["", f"Страница {page.page}/{page.pages_count}"])
+    return "\n".join(lines)
 
 def build_trade_offers_page_text(page: TradeOffersPage) -> str:
     title = "<b>🔁 Рынок обменов</b>" if page.mode != "my" else "<b>📦 Мои обмены</b>"
@@ -228,6 +277,8 @@ def build_trade_offers_page_text(page: TradeOffersPage) -> str:
         for offer in page.offers:
             if offer.wanted_type == "currency":
                 wanted = f"{offer.wanted_currency_icon or '💰'} {format_number(offer.wanted_currency_amount)} {offer.wanted_currency_name or offer.wanted_currency_code}"
+            elif offer.wanted_asset_type == "cosmetics":
+                wanted = f"🎨 {offer.wanted_cosmetics_count} предмет(а)"
             else:
                 wanted = f"🎴 {offer.wanted_cards_count} карт."
             status = {
@@ -236,7 +287,13 @@ def build_trade_offers_page_text(page: TradeOffersPage) -> str:
                 "cancelled": "🚫 отменено",
             }.get(offer.status, offer.status)
             target = f" → 🎯 {escape(offer.target_nickname, quote=False)}" if offer.target_nickname else ""
-            lines.append(f"#{offer.id} • <b>{escape(offer.creator_nickname, quote=False)}</b>{target} • отдаёт {offer.offered_count} карт. → {wanted} • {status}")
+            giving_parts = []
+            if offer.offered_count:
+                giving_parts.append(f"🎴 {offer.offered_count}")
+            if offer.offered_cosmetics_count:
+                giving_parts.append(f"🎨 {offer.offered_cosmetics_count}")
+            giving = " + ".join(giving_parts) or "ничего"
+            lines.append(f"#{offer.id} • <b>{escape(offer.creator_nickname, quote=False)}</b>{target} • отдаёт {giving} → {wanted} • {status}")
     lines.append("")
     lines.append(f"Страница {page.page}/{page.pages_count}")
     return "\n".join(lines)
@@ -259,11 +316,18 @@ def build_trade_offer_profile_text(offer: TradeOfferProfile) -> str:
     ]
     for card in offer.offered_cards:
         lines.append(format_card_line(card))
+    for item in offer.offered_cosmetics:
+        lines.append(_format_cosmetic_line(item) + f" · экземпляр #{item.id}")
+    if not offer.offered_cards and not offer.offered_cosmetics:
+        lines.append("—")
 
     lines.append("")
     lines.append("<b>Хочет получить</b>")
     if offer.wanted_type == "currency":
         lines.append(f"{offer.wanted_currency_icon or '💰'} <b>{format_number(offer.wanted_currency_amount)}</b> {offer.wanted_currency_name or offer.wanted_currency_code}")
+    elif offer.wanted_asset_type == "cosmetics":
+        for item, quantity in offer.wanted_cosmetics:
+            lines.append(f"{quantity}× {_format_cosmetic_line(item)}")
     else:
         for card, quantity in offer.wanted_cards:
             lines.append(f"{quantity}× {format_card_line(card)}")

@@ -1,0 +1,23 @@
+# R6 — DNA Collectibles + OVR 110
+
+- DNA перенесён из «Событий» прямо в главное меню.
+- Добавлен универсальный stackable inventory: `inventory_items` + `user_items`.
+- `DNA Collectible` — отдельный предмет, не карта.
+- Первый вход в DNA: +1 DNA Collectible один раз на аккаунт.
+- DNA Extraction:
+  - 3× 90–92 → 1 Collectible
+  - 2× 93–94 → 1
+  - 1× 95–96 → 2
+  - 1× 97 → 3
+  - 1× 98 → 5
+  - 1× 99 → 10
+- 95–96 Choice Craft: 3 Collectibles → одна выбранная активная 95–96 карта; один раз на аккаунт; DNA и exclusive collections исключены.
+- Основная прогрессия:
+  - 3× NEXT GEN + 2× 92 + 5 Collectibles → DNA 93
+  - 2× DNA 93 + 2× 94 + 10 → DNA 95
+  - 2× DNA 95 + 2× 97 + 20 → DNA 98
+  - 1× DNA 98 + 3× 99 + 50 → DNA 100
+- На рендере акцент: 99 OVR был потолком, DNA впервые выводит карточки на 100 OVR.
+- Технический диапазон `cards.overall` расширен до 1–110 через безопасную SQLite migration 0008.
+- Admin card create/edit, bulk import/upload и salary range принимают OVR до 110.
+- Игровые лимиты отдельных режимов (например Clone War/Stronghold), где 99 — часть правил режима, не менялись.

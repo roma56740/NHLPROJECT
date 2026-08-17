@@ -10,9 +10,55 @@ def build_admin_security_main_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="👥 Игроки", callback_data="admin_security:users:1")],
             [InlineKeyboardButton(text="🔎 Найти игрока", callback_data="admin_security:search_users:1")],
+            [InlineKeyboardButton(text="🔒 Активные матч-локи", callback_data="admin_security:match_locks:1")],
             [InlineKeyboardButton(text="📜 Журнал", callback_data="admin_security:logs:1")],
             [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_security:main")],
             [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu:main")],
+        ]
+    )
+
+
+def build_match_locks_keyboard(locks, page: int, pages_count: int) -> InlineKeyboardMarkup:
+    """ЕДИНЫЙ ГЛОБАЛЬНЫЙ MATCH LOCK: список активных player_match_locks —
+    диагностика зависших/долгих блокировок (см. app.services.match_guard)."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for lock in locks:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"user_id={lock.user_id} · {lock.match_type} · {lock.status}",
+                    callback_data=f"admin_security:match_lock:{lock.id}:{page}",
+                )
+            ]
+        )
+
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"admin_security:match_locks:{page - 1}"))
+    if page < pages_count:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"admin_security:match_locks:{page + 1}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data=f"admin_security:match_locks:{page}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_security:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_match_lock_detail_keyboard(lock_id: int, page: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🛑 Принудительно освободить", callback_data=f"admin_security:match_lock_release_confirm:{lock_id}:{page}")],
+            [InlineKeyboardButton(text="⬅️ К списку", callback_data=f"admin_security:match_locks:{page}")],
+        ]
+    )
+
+
+def build_match_lock_release_confirm_keyboard(lock_id: int, page: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить освобождение", callback_data=f"admin_security:match_lock_release:{lock_id}:{page}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"admin_security:match_lock:{lock_id}:{page}")],
         ]
     )
 

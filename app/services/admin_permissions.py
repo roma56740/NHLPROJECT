@@ -52,7 +52,7 @@ ADMIN_ROLES: dict[str, AdminRoleInfo] = {
     ADMIN_ROLE_CLAN: AdminRoleInfo(
         ADMIN_ROLE_CLAN,
         "🏰 Клан-админ",
-        "Кланы, арены, войны кланов и статистика кланов.",
+        "Кланы, арены, CLAN WAR 2.0 и статистика кланов.",
     ),
     ADMIN_ROLE_ANALYST: AdminRoleInfo(
         ADMIN_ROLE_ANALYST,
@@ -99,6 +99,11 @@ PERMISSION_SHOP = "shop"
 PERMISSION_CLANS = "clans"
 PERMISSION_ARENAS = "arenas"
 PERMISSION_TRADES = "trades"
+PERMISSION_STRONGHOLD = "stronghold"
+PERMISSION_WAR2 = "war2"
+PERMISSION_RANKED = "ranked"
+PERMISSION_BLACK_MARKET = "black_market"
+PERMISSION_COSMETICS = "cosmetics"
 
 ALL_PERMISSIONS = {
     PERMISSION_ADMIN_PANEL,
@@ -129,6 +134,11 @@ ALL_PERMISSIONS = {
     PERMISSION_CLANS,
     PERMISSION_ARENAS,
     PERMISSION_TRADES,
+    PERMISSION_STRONGHOLD,
+    PERMISSION_WAR2,
+    PERMISSION_RANKED,
+    PERMISSION_BLACK_MARKET,
+    PERMISSION_COSMETICS,
 }
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
@@ -144,6 +154,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         PERMISSION_SALARIES,
         PERMISSION_CHEMISTRY,
         PERMISSION_REWARDS,
+        PERMISSION_COSMETICS,
     },
     ADMIN_ROLE_ECONOMY: {
         PERMISSION_ADMIN_PANEL,
@@ -156,6 +167,10 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         PERMISSION_HOCKEY_PASS,
         PERMISSION_DAILY_LOGIN,
         PERMISSION_CREATORS,
+        PERMISSION_STRONGHOLD,
+        PERMISSION_WAR2,
+        PERMISSION_RANKED,
+        PERMISSION_BLACK_MARKET,
     },
     ADMIN_ROLE_MODERATOR: {
         PERMISSION_ADMIN_PANEL,
@@ -170,8 +185,9 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         PERMISSION_ADMIN_PANEL,
         PERMISSION_CLANS,
         PERMISSION_ARENAS,
-        PERMISSION_TRADES,
+            PERMISSION_TRADES,
         PERMISSION_RATING_ADMIN,
+        PERMISSION_WAR2,
     },
     ADMIN_ROLE_ANALYST: {
         PERMISSION_ADMIN_PANEL,
@@ -192,6 +208,7 @@ ADMIN_TEXT_PERMISSIONS: dict[str, str] = {
     "🏆 Лиги и рейтинг": PERMISSION_RATING_ADMIN,
     "🧪 Химия": PERMISSION_CHEMISTRY,
     "🎪 События": PERMISSION_EVENTS,
+    "🏰 THE STRONGHOLD": PERMISSION_STRONGHOLD,
     "💱 Валюты": PERMISSION_WALLETS,
     "🤝 Кланы": PERMISSION_CLANS,
     "🏟 Арены": PERMISSION_ARENAS,
@@ -206,6 +223,15 @@ ADMIN_TEXT_PERMISSIONS: dict[str, str] = {
     "🛡 Безопасность": PERMISSION_SECURITY,
     "📢 Рассылка": PERMISSION_BROADCAST,
     "⚙️ Настройки": PERMISSION_SETTINGS,
+    "🕶 Чёрный рынок": PERMISSION_BLACK_MARKET,
+    "🏆 Админка Ranked": PERMISSION_RANKED,
+    "🤖 Диагностика ботов": PERMISSION_RANKED,
+    "🕐 Расписание Stronghold": PERMISSION_STRONGHOLD,
+    "⚔️ Админка Clan War 2.0": PERMISSION_WAR2,
+    "🛠 Технический перерыв": PERMISSION_SETTINGS,
+    "🔒 Активные матчи": PERMISSION_SECURITY,
+    "🎬 Видео паков": PERMISSION_PACKS,
+    "🎨 Управление косметикой": PERMISSION_COSMETICS,
 }
 
 CALLBACK_PERMISSION_PREFIXES: tuple[tuple[str, str], ...] = (
@@ -214,6 +240,7 @@ CALLBACK_PERMISSION_PREFIXES: tuple[tuple[str, str], ...] = (
     ("admin_panel:admin_", PERMISSION_ADMIN_ROLES),
     ("admin_panel:role_", PERMISSION_ADMIN_ROLES),
     ("admin_panel:get_", PERMISSION_DATA_EXPORT),
+    ("admin_bulk:", PERMISSION_ADMIN_PANEL),
     ("admin_cards:", PERMISSION_CARDS),
     ("admin_bulk_cards:", PERMISSION_CARDS),
     ("bulk_cards:", PERMISSION_CARDS),
@@ -224,26 +251,37 @@ CALLBACK_PERMISSION_PREFIXES: tuple[tuple[str, str], ...] = (
     ("admin_divisions:", PERMISSION_DIVISIONS),
     ("admin_salaries:", PERMISSION_SALARIES),
     ("admin_chemistry:", PERMISSION_CHEMISTRY),
+    ("chemistry:", PERMISSION_CHEMISTRY),
     ("admin_rewards:", PERMISSION_REWARDS),
     ("admin_users:", PERMISSION_USERS),
     ("admin_wallets:", PERMISSION_WALLETS),
     ("admin_security:", PERMISSION_SECURITY),
     ("admin_settings:", PERMISSION_SETTINGS),
+    ("admin_render:", PERMISSION_COSMETICS),
+    ("admin_maintenance:", PERMISSION_SETTINGS),
     ("broadcast:", PERMISSION_BROADCAST),
     ("admin_promo:", PERMISSION_PROMO),
     ("creators:admin", PERMISSION_CREATORS),
     ("admin_creators:", PERMISSION_CREATORS),
-    ("seasons:", PERMISSION_SEASONS),
+    ("season:", PERMISSION_SEASONS),
+    ("clan_season:", PERMISSION_SEASONS),
     ("admin_rating:", PERMISSION_RATING_ADMIN),
     ("admin_quests:", PERMISSION_QUESTS),
     ("events:admin", PERMISSION_EVENTS),
     ("admin_events:", PERMISSION_EVENTS),
     ("hockey_pass:admin", PERMISSION_HOCKEY_PASS),
+    ("admin_hpass:", PERMISSION_HOCKEY_PASS),
     ("daily_login:admin", PERMISSION_DAILY_LOGIN),
+    ("admin_daily:", PERMISSION_DAILY_LOGIN),
     ("shop:admin", PERMISSION_SHOP),
     ("admin_clans:", PERMISSION_CLANS),
     ("admin_arenas:", PERMISSION_ARENAS),
     ("admin_trades:", PERMISSION_TRADES),
+    ("admin_stronghold:", PERMISSION_STRONGHOLD),
+    ("admin_war2:", PERMISSION_WAR2),
+    ("admin_ranked:", PERMISSION_RANKED),
+    ("admin_cosmetics:", PERMISSION_COSMETICS),
+    ("bm_admin:", PERMISSION_BLACK_MARKET),
 )
 
 COMMAND_PERMISSIONS: dict[str, str] = {

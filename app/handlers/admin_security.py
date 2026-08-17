@@ -7,12 +7,16 @@ from app.keyboards.admin_security import (
     SECURITY_LOGS_PER_PAGE,
     SECURITY_USERS_PER_PAGE,
     build_admin_security_main_keyboard,
+    build_match_lock_detail_keyboard,
+    build_match_lock_release_confirm_keyboard,
+    build_match_locks_keyboard,
     build_security_cancel_keyboard,
     build_security_cards_keyboard,
     build_security_logs_keyboard,
     build_security_user_keyboard,
     build_security_users_keyboard,
 )
+from app.services import match_guard
 from app.services.security import (
     get_security_logs_page,
     get_security_summary,
@@ -144,6 +148,20 @@ async def admin_security_button(message: Message, state: FSMContext) -> None:
     await state.clear()
     await safe_delete_message(message)
     await show_security_main(message)
+
+
+@router.message(F.text == "🔒 Активные матчи")
+async def admin_security_match_locks_button(message: Message, state: FSMContext) -> None:
+    if not await answer_admin_only(message):
+        return
+    await state.clear()
+    await safe_delete_message(message)
+    all_locks = await match_guard.list_active_locks(limit=500)
+    locks_page, safe_page, pages_count = _paginate_locks(all_locks, 1)
+    await message.answer(
+        _build_match_locks_text(locks_page, len(all_locks), safe_page, pages_count),
+        reply_markup=build_match_locks_keyboard(locks_page, safe_page, pages_count),
+    )
 
 
 @router.callback_query(F.data == "admin_security:main")
@@ -380,3 +398,143 @@ async def admin_security_logs(callback: CallbackQuery, state: FSMContext) -> Non
         reply_markup=build_security_logs_keyboard(page=logs_page.page, pages_count=logs_page.pages_count),
     )
     await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# ЕДИНЫЙ ГЛОБАЛЬНЫЙ MATCH LOCK — административная диагностика (см.
+# app/services/match_guard.py). Доступ уже ограничен PERMISSION_SECURITY через
+# AdminPermissionMiddleware (префикс "admin_security:"), answer_callback_admin_only
+# ниже — дополнительная защита от подмены callback_data на уровне хендлера.
+# ---------------------------------------------------------------------------
+
+MATCH_LOCKS_PER_PAGE = 10
+
+
+def _paginate_locks(locks: list, page: int) -> tuple[list, int, int]:
+    pages_count = max(1, (len(locks) + MATCH_LOCKS_PER_PAGE - 1) // MATCH_LOCKS_PER_PAGE)
+    safe_page = min(max(page, 1), pages_count)
+    start = (safe_page - 1) * MATCH_LOCKS_PER_PAGE
+    return locks[start : start + MATCH_LOCKS_PER_PAGE], safe_page, pages_count
+
+
+def _build_match_locks_text(locks_page: list, total: int, page: int, pages_count: int) -> str:
+    lines = [f"<b>🔒 Активные матч-локи</b> ({total} всего, стр. {page}/{pages_count})", ""]
+    if not locks_page:
+        lines.append("Активных блокировок нет.")
+    for lock in locks_page:
+        label = match_guard.MATCH_TYPE_LABELS.get(lock.match_type, lock.match_type)
+        lines.append(
+            f"• user_id={lock.user_id} · {label} · {lock.status} · создан {lock.acquired_at} · "
+            f"heartbeat {lock.heartbeat_at} · истекает {lock.expires_at}"
+        )
+    return "\n".join(lines)
+
+
+def _build_match_lock_detail_text(lock) -> str:
+    label = match_guard.MATCH_TYPE_LABELS.get(lock.match_type, lock.match_type)
+    return "\n".join(
+        [
+            f"<b>🔒 Lock #{lock.id}</b>",
+            "",
+            f"Пользователь (внутренний id): {lock.user_id}",
+            f"Режим: {label}",
+            f"match_id: {lock.match_id if lock.match_id is not None else '—'}",
+            f"Статус: {lock.status}",
+            f"request_id: {lock.request_id or '—'}",
+            f"Создан: {lock.acquired_at}",
+            f"Последний heartbeat: {lock.heartbeat_at}",
+            f"Истекает: {lock.expires_at}",
+        ]
+    )
+
+
+@router.callback_query(F.data.startswith("admin_security:match_locks:"))
+async def admin_security_match_locks(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+
+    await state.clear()
+    page = int(callback.data.split(":")[-1]) if callback.data else 1
+    all_locks = await match_guard.list_active_locks(limit=500)
+    locks_page, safe_page, pages_count = _paginate_locks(all_locks, page)
+
+    await edit_admin_message(
+        callback,
+        _build_match_locks_text(locks_page, len(all_locks), safe_page, pages_count),
+        reply_markup=build_match_locks_keyboard(locks_page, safe_page, pages_count),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_security:match_lock:"))
+async def admin_security_match_lock_detail(callback: CallbackQuery) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+
+    parts = callback.data.split(":")
+    lock_id = int(parts[2])
+    page = int(parts[3])
+
+    all_locks = await match_guard.list_active_locks(limit=500)
+    lock = next((item for item in all_locks if item.id == lock_id), None)
+    if lock is None:
+        await callback.answer("Lock уже неактивен (снят/истёк).", show_alert=True)
+        locks_page, safe_page, pages_count = _paginate_locks(all_locks, page)
+        await edit_admin_message(
+            callback,
+            _build_match_locks_text(locks_page, len(all_locks), safe_page, pages_count),
+            reply_markup=build_match_locks_keyboard(locks_page, safe_page, pages_count),
+        )
+        return
+
+    await edit_admin_message(
+        callback,
+        _build_match_lock_detail_text(lock),
+        reply_markup=build_match_lock_detail_keyboard(lock_id, page),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_security:match_lock_release_confirm:"))
+async def admin_security_match_lock_release_confirm(callback: CallbackQuery) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+
+    parts = callback.data.split(":")
+    lock_id = int(parts[2])
+    page = int(parts[3])
+
+    await edit_admin_message(
+        callback,
+        "Принудительно освободить эту блокировку?\n\n"
+        "Матч (если он реально ещё идёт) НЕ будет остановлен — снимается только lock, "
+        "позволяя пользователю начать новый матч. Действие записывается в audit log.",
+        reply_markup=build_match_lock_release_confirm_keyboard(lock_id, page),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_security:match_lock_release:"))
+async def admin_security_match_lock_release(callback: CallbackQuery) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+
+    parts = callback.data.split(":")
+    lock_id = int(parts[2])
+    page = int(parts[3])
+
+    released = await match_guard.admin_force_release_lock(
+        lock_id, admin_id=callback.from_user.id, reason="admin_manual_force_release"
+    )
+    if released is None:
+        await callback.answer("Lock уже был снят (двойное нажатие) — ничего делать не нужно.", show_alert=True)
+    else:
+        await callback.answer(f"Lock #{lock_id} (user_id={released.user_id}) освобождён.", show_alert=True)
+
+    all_locks = await match_guard.list_active_locks(limit=500)
+    locks_page, safe_page, pages_count = _paginate_locks(all_locks, page)
+    await edit_admin_message(
+        callback,
+        _build_match_locks_text(locks_page, len(all_locks), safe_page, pages_count),
+        reply_markup=build_match_locks_keyboard(locks_page, safe_page, pages_count),
+    )

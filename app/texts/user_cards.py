@@ -70,12 +70,14 @@ def build_player_cards_page_text(page: PlayerCardsPage) -> str:
         return USER_CARDS_EMPTY_TEXT
 
     filter_line = build_filter_line(page)
+    sort_line = "слабые → сильные" if page.sort_order == "ovr_asc" else "сильные → слабые"
 
     return f"""
 <b>🃏 Моя коллекция</b>
 
 Карточек найдено: <b>{page.total_count}</b>
 Страница: <b>{page.page}/{page.pages_count}</b>{filter_line}
+Сортировка: <b>{sort_line}</b>
 
 Выбери карточку из списка ниже.
 """.strip()

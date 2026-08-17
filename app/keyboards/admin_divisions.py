@@ -9,8 +9,6 @@ def build_admin_divisions_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Создать дивизион", callback_data="admin_divisions:create")],
         [InlineKeyboardButton(text="🏒 Список дивизионов", callback_data="admin_divisions:list")],
-        [InlineKeyboardButton(text="🛡 Картинки команд", callback_data="admin_divisions:assets:team:1")],
-        [InlineKeyboardButton(text="🌍 Картинки стран", callback_data="admin_divisions:assets:country:1")],
         [InlineKeyboardButton(text="⚠️ Проверить недостающее", callback_data="admin_divisions:missing")],
         [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu:main")],
     ])
@@ -73,8 +71,6 @@ def build_cancel_keyboard() -> InlineKeyboardMarkup:
 def build_missing_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🏒 Дивизионы", callback_data="admin_divisions:list")],
-        [InlineKeyboardButton(text="🛡 Картинки команд", callback_data="admin_divisions:assets:team:1")],
-        [InlineKeyboardButton(text="🌍 Картинки стран", callback_data="admin_divisions:assets:country:1")],
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_divisions:missing")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_divisions:main")],
     ])

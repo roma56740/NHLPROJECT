@@ -27,6 +27,7 @@ class PackInfo:
     name: str
     description: str
     image_path: str | None
+    animation_video_path: str | None
     price_currency_code: str | None
     price_amount: int
     active: bool
@@ -143,6 +144,7 @@ class AdminPackDetails:
     name: str
     description: str
     image_path: str | None
+    animation_video_path: str | None
     price_currency_code: str | None
     price_amount: int
     active: bool
@@ -383,6 +385,7 @@ async def get_pack_info(pack_id: int) -> PackInfo | None:
         name=details.name,
         description=details.description,
         image_path=details.image_path,
+        animation_video_path=details.animation_video_path,
         price_currency_code=details.price_currency_code,
         price_amount=details.price_amount,
         active=details.active,
@@ -403,6 +406,7 @@ async def get_admin_pack_details(pack_id: int) -> AdminPackDetails | None:
                 packs.name,
                 packs.description,
                 packs.image_path,
+                packs.animation_video_path,
                 packs.price_currency_code,
                 packs.price_amount,
                 packs.active,
@@ -441,6 +445,7 @@ async def get_admin_pack_details(pack_id: int) -> AdminPackDetails | None:
         name=row["name"],
         description=row["description"],
         image_path=row["image_path"],
+        animation_video_path=row["animation_video_path"],
         price_currency_code=row["price_currency_code"],
         price_amount=row["price_amount"],
         active=bool(row["active"]),
@@ -781,6 +786,112 @@ async def update_pack_image_path(pack_id: int, image_path: str) -> bool:
     return await update_pack_field(pack_id, "image_path", image_path)
 
 
+async def update_pack_animation_video_path(pack_id: int, video_path: str | None) -> bool:
+    """Attach or remove the admin-uploaded 10-second opening video for a pack."""
+    return await update_pack_field(pack_id, "animation_video_path", video_path)
+
+
+async def update_pack_animation_video(
+    pack_id: int,
+    *,
+    video_path: str | None,
+    duration_seconds: int | None,
+    file_size: int | None,
+    file_id: str | None,
+    file_unique_id: str | None,
+    uploaded_by: int | None,
+) -> bool:
+    """Полная замена/загрузка видео открытия пака с метаданными (ТЗ "ВИДЕО В
+    АДМИН-ПАНЕЛИ") — file_id/file_unique_id сохраняются ОТДЕЛЬНО от локального
+    пути, чтобы видео не зависело только от временной директории контейнера."""
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE packs
+            SET animation_video_path = ?,
+                animation_duration_seconds = ?,
+                animation_file_size = ?,
+                animation_file_id = ?,
+                animation_file_unique_id = ?,
+                animation_uploaded_at = CURRENT_TIMESTAMP,
+                animation_uploaded_by = ?,
+                animation_enabled = 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (video_path, duration_seconds, file_size, file_id, file_unique_id, uploaded_by, pack_id),
+        )
+        connection.commit()
+    return True
+
+
+async def remove_pack_animation_video(pack_id: int) -> bool:
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE packs
+            SET animation_video_path = NULL,
+                animation_duration_seconds = NULL,
+                animation_file_size = NULL,
+                animation_file_id = NULL,
+                animation_file_unique_id = NULL,
+                animation_uploaded_at = NULL,
+                animation_uploaded_by = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (pack_id,),
+        )
+        connection.commit()
+    return True
+
+
+async def set_pack_animation_enabled(pack_id: int, enabled: bool) -> bool:
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE packs SET animation_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (1 if enabled else 0, pack_id),
+        )
+        connection.commit()
+    return enabled
+
+
+@dataclass(frozen=True)
+class PackAnimationMeta:
+    video_path: str | None
+    enabled: bool
+    duration_seconds: int | None
+    file_size: int | None
+    file_id: str | None
+    file_unique_id: str | None
+    uploaded_at: str | None
+    uploaded_by: int | None
+
+
+async def get_pack_animation_meta(pack_id: int) -> PackAnimationMeta | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT animation_video_path, animation_enabled, animation_duration_seconds, animation_file_size,
+                   animation_file_id, animation_file_unique_id, animation_uploaded_at, animation_uploaded_by
+            FROM packs WHERE id = ?
+            """,
+            (pack_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return PackAnimationMeta(
+        video_path=row["animation_video_path"],
+        enabled=bool(row["animation_enabled"]),
+        duration_seconds=row["animation_duration_seconds"],
+        file_size=row["animation_file_size"],
+        file_id=row["animation_file_id"],
+        file_unique_id=row["animation_file_unique_id"],
+        uploaded_at=row["animation_uploaded_at"],
+        uploaded_by=row["animation_uploaded_by"],
+    )
+
+
 async def update_pack_text_field(pack_id: int, field: str, value: str) -> bool:
     allowed_fields = {"name", "description"}
 
@@ -879,7 +990,7 @@ async def toggle_pack_shop(pack_id: int) -> bool | None:
 
 
 async def update_pack_field(pack_id: int, field: str, value: object) -> bool:
-    allowed_fields = {"image_path", "name", "description"}
+    allowed_fields = {"image_path", "animation_video_path", "name", "description"}
 
     if field not in allowed_fields:
         return False
@@ -1136,12 +1247,67 @@ async def open_user_pack(user_id: int, pack_id: int) -> tuple[PackOpeningResult 
                     )
                 )
 
+            # PENDING REVEAL: создаётся в ТОЙ ЖЕ транзакции, что и выдача наград —
+            # награда уже "зафиксирована" (ТЗ) к моменту, когда будет отправлено
+            # видео. request_id детерминирован от opening_id (свежий autoincrement
+            # PK), этого достаточно для идемпотентности — повторный вызов с тем же
+            # opening_id физически невозможен, а UNIQUE(opening_id)/UNIQUE(request_id)
+            # защищают от повторной вставки, если код вызовется дважды по ошибке.
+            reward_snapshot = json.dumps([reward.__dict__ for reward in rewards], ensure_ascii=False)
+            connection.execute(
+                """
+                INSERT INTO pack_pending_reveals
+                    (opening_id, user_id, pack_id, request_id, reward_snapshot, status, reveal_at)
+                VALUES (?, ?, ?, ?, ?, 'pending', datetime('now', '+10 seconds'))
+                """,
+                (opening_id, user_id, pack_row["id"], f"pack-open-{opening_id}", reward_snapshot),
+            )
+
             connection.commit()
         except Exception:
             connection.rollback()
             raise
 
     return PackOpeningResult(opening_id=opening_id, pack_id=pack_row["id"], pack_code=pack_row["code"], pack_name=pack_row["name"], rewards=rewards), None
+
+
+async def attach_reveal_message(opening_id: int, *, chat_id: int, message_id: int) -> None:
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE pack_pending_reveals SET chat_id = ?, message_id = ? WHERE opening_id = ? AND status = 'pending'",
+            (chat_id, message_id, opening_id),
+        )
+        connection.commit()
+
+
+async def mark_reveal_completed(opening_id: int) -> None:
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE pack_pending_reveals SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE opening_id = ? AND status = 'pending'",
+            (opening_id,),
+        )
+        connection.commit()
+
+
+async def mark_reveal_failed(opening_id: int, error: str) -> None:
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE pack_pending_reveals SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error = ? WHERE opening_id = ? AND status = 'pending'",
+            (error[:500], opening_id),
+        )
+        connection.commit()
+
+
+def rewards_from_snapshot(reward_snapshot: str) -> list[PackRewardItem]:
+    return [PackRewardItem(**item) for item in json.loads(reward_snapshot)]
+
+
+async def list_pending_reveals(status: str = "pending") -> list[dict]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM pack_pending_reveals WHERE status = ? ORDER BY id", (status,)
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def choose_card_for_slot(connection, pack_id: int, slot):

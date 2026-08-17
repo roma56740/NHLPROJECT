@@ -9,11 +9,11 @@ def safe(value: object | None) -> str:
 
 
 ADMIN_DIVISIONS_MAIN_TEXT = """
-<b>🏒 Дивизионы и анимация</b>
+<b>🏒 Дивизионы</b>
 
-Здесь настраиваются дивизионы команд и картинки для анимации открытия паков.
+Здесь настраиваются дивизионы и распределение команд.
 
-Логика открытия: <b>дивизион → команда → страна → карточка</b>.
+Видео открытия теперь загружается отдельно в карточке каждого пака: <b>Админ-панель → Паки → нужный пак → Видео открытия</b>.
 """.strip()
 
 ADMIN_DIVISION_NAME_TEXT = """
@@ -105,8 +105,7 @@ def build_missing_report_text(report: MissingAssetReport) -> str:
         ("🎁 Паки", report.missing_packs),
         ("🏒 Дивизионы без картинки", report.missing_divisions),
         ("🛡 Команды без дивизиона", report.teams_without_division),
-        ("🖼 Команды без картинки анимации", report.missing_team_images),
-        ("🌍 Страны без картинки анимации", report.missing_country_images),
+        ("🎬 Паки без видео открытия", report.missing_pack_videos),
     ]
     for title, values in groups:
         if not values:

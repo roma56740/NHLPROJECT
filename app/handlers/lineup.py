@@ -19,6 +19,7 @@ from app.services.lineup import (
     set_lineup_card,
 )
 from app.services.renders import render_lineup_image
+from app.services.card_sorting import set_user_card_sort_order
 from app.services.users import get_player_profile_by_telegram_id
 from app.texts.lineup import LINEUP_CLEAR_CONFIRM_TEXT, build_lineup_text, build_slot_cards_text
 from app.utils.messages import safe_delete_callback_message, safe_delete_message
@@ -57,7 +58,11 @@ async def edit_or_send(callback: CallbackQuery, text: str, reply_markup=None) ->
 
 
 
-async def send_lineup_view(target: CallbackQuery | Message, overview, reply_markup=None) -> None:
+async def send_lineup_view(target: CallbackQuery | Message, overview, reply_markup=None, player_id: int | None = None) -> None:
+    """`player_id` — внутренний users.id (НЕ telegram_id, который ниже локально
+    называется `user_id` и используется только для имени файла рендера) — нужен,
+    чтобы подставить экипированные CLAN WAR 2.0 фон/рамку (app.services.war2_cosmetics
+    работает по users.id). Опционален: без него (старые вызовы) рендер не меняется."""
     if isinstance(target, CallbackQuery):
         message = target.message
         bot = target.bot
@@ -72,8 +77,20 @@ async def send_lineup_view(target: CallbackQuery | Message, overview, reply_mark
 
     text = build_lineup_text(overview)
 
+    background_path = frame_path = None
+    if player_id is not None:
+        try:
+            from app.services import war2_cosmetics
+
+            background_path = await war2_cosmetics.get_equipped_background_path(player_id)
+            frame_path = await war2_cosmetics.get_equipped_frame_path(player_id)
+        except Exception:
+            background_path = frame_path = None
+
     try:
-        render_path = render_lineup_image(overview, user_id=user_id)
+        render_path = render_lineup_image(
+            overview, user_id=user_id, background_override_path=background_path, frame_override_path=frame_path
+        )
     except Exception:
         render_path = None
 
@@ -114,7 +131,7 @@ async def show_lineup(callback: CallbackQuery) -> None:
         return
 
     overview = await get_lineup_overview(profile.id)
-    await send_lineup_view(callback, overview, reply_markup=build_lineup_main_keyboard(overview))
+    await send_lineup_view(callback, overview, reply_markup=build_lineup_main_keyboard(overview), player_id=profile.id)
 
 
 async def show_slot_cards(callback: CallbackQuery, slot_code: str, page: int) -> None:
@@ -157,7 +174,7 @@ async def lineup_button(message: Message, state: FSMContext) -> None:
     await safe_delete_message(message)
 
     overview = await get_lineup_overview(profile.id)
-    await send_lineup_view(message, overview, reply_markup=build_lineup_main_keyboard(overview))
+    await send_lineup_view(message, overview, reply_markup=build_lineup_main_keyboard(overview), player_id=profile.id)
 
 
 @router.callback_query(F.data == "lineup:main")
@@ -175,6 +192,21 @@ async def lineup_slot(callback: CallbackQuery, state: FSMContext) -> None:
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
     await show_slot_cards(callback, slot_code=slot_code, page=page)
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("lineup:sort:"))
+async def lineup_sort_cards(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    profile = await get_current_player(callback)
+    if profile is None:
+        await callback.answer("Открой игру через /start", show_alert=True)
+        return
+    parts = callback.data.split(":") if callback.data else []
+    slot_code = parts[2] if len(parts) > 2 else "G"
+    sort_order = parts[3] if len(parts) > 3 else "ovr_desc"
+    await set_user_card_sort_order(profile.id, sort_order)
+    await show_slot_cards(callback, slot_code=slot_code, page=1)
+    await callback.answer("Сортировка сохранена")
 
 
 @router.callback_query(F.data.startswith("lineup:set:"))

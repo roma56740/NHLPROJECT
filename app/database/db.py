@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -17,6 +18,8 @@ from app.database.schema import (
 )
 from config import settings
 
+
+logger = logging.getLogger(__name__)
 
 DATABASE_PATH: Path = settings.database_path
 
@@ -57,11 +60,32 @@ async def init_database() -> None:
         seed_default_creator_level_settings(connection)
         migrate_creators_without_zero_level(connection)
         cleanup_legacy_demo_content(connection)
+
+        from app.services.stronghold_seed import seed_stronghold_content
+        seed_stronghold_content(connection)
+
+        from app.services.war2_seed import seed_war2_content
+        seed_war2_content(connection)
+
+        from app.services.ranked_seed import seed_ranked_content
+        seed_ranked_content(connection)
+
+        from app.services.dna_crafting import seed_dna_content
+        seed_dna_content(connection)
+
         connection.commit()
 
 
 def run_migrations(connection: sqlite3.Connection) -> None:
+    from app.database.migrations import ensure_migrations_table, run_once
+    from app.services.audit_log import ensure_audit_log_table
+    from app.services.error_log import ensure_error_log_table
     from app.services.creator_tournaments import migrate_creator_tournaments
+
+    ensure_migrations_table(connection)
+    run_once(connection, "0001_create_audit_log", ensure_audit_log_table)
+    run_once(connection, "0002_create_application_errors", ensure_error_log_table)
+
     migrate_creator_tournaments(connection)
     ensure_column(
         connection=connection,
@@ -69,6 +93,9 @@ def run_migrations(connection: sqlite3.Connection) -> None:
         column_name="salary",
         column_sql="salary INTEGER NOT NULL DEFAULT 0",
     )
+    run_once(connection, "0007_cards_allow_ovr_100", migrate_cards_allow_ovr_100)
+    run_once(connection, "0008_cards_allow_ovr_110", migrate_cards_allow_ovr_110)
+    run_once(connection, "0009_creator_weekly_claim_periods", migrate_creator_weekly_claim_periods)
     ensure_column(
         connection=connection,
         table_name="bot_admins",
@@ -84,6 +111,14 @@ def run_migrations(connection: sqlite3.Connection) -> None:
         column_name="rarity_chances",
         column_sql="rarity_chances TEXT",
     )
+    # PACK OPENING VIDEO V9: one admin-uploaded opening video per regular pack.
+    # Stored under assets/uploads (Railway volume symlink), so it survives deploys.
+    ensure_column(
+        connection=connection,
+        table_name="packs",
+        column_name="animation_video_path",
+        column_sql="animation_video_path TEXT",
+    )
     ensure_column(
         connection=connection,
         table_name="match_queue",
@@ -96,6 +131,24 @@ def run_migrations(connection: sqlite3.Connection) -> None:
         column_name="trade_blocked",
         column_sql="trade_blocked INTEGER NOT NULL DEFAULT 0",
     )
+    # GLOBAL COSMETICS V10.2: every owned cosmetic copy is a tradable inventory
+    # instance. trade_locked is used by moderation/future operations; equipped or
+    # card-bound copies are additionally excluded by transactional checks.
+    ensure_column(
+        connection=connection,
+        table_name="user_cosmetic_items",
+        column_name="trade_locked",
+        column_sql="trade_locked INTEGER NOT NULL DEFAULT 0",
+    )
+    # Existing trade_offers.wanted_type has a legacy CHECK(cards/currency). Keep it
+    # untouched for safe Railway migrations and distinguish card-vs-cosmetic wanted
+    # assets with this backward-compatible discriminator.
+    ensure_column(
+        connection=connection,
+        table_name="trade_offers",
+        column_name="wanted_asset_type",
+        column_sql="wanted_asset_type TEXT NOT NULL DEFAULT 'cards'",
+    )
     ensure_column(
         connection=connection,
         table_name="trade_offers",
@@ -104,6 +157,16 @@ def run_migrations(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_trade_offers_target ON trade_offers(target_user_id, status)"
+    )
+
+    # CLAN WAR 2.0 (раздел 1.9 плана): различает BASE_COLLECTION (доступна для Draft
+    # Pool/Clone War) и EXCLUSIVE_COLLECTION (паки/инвентарь/Wild Card). По умолчанию 0
+    # (base) — новые коллекции без явного флага остаются доступными для дро-пула.
+    ensure_column(
+        connection=connection,
+        table_name="collections",
+        column_name="is_exclusive",
+        column_sql="is_exclusive INTEGER NOT NULL DEFAULT 0",
     )
 
     ensure_column(connection=connection, table_name="users", column_name="creator_subscribers", column_sql="creator_subscribers INTEGER NOT NULL DEFAULT 0")
@@ -122,7 +185,65 @@ def run_migrations(connection: sqlite3.Connection) -> None:
     ensure_column(connection=connection, table_name="animation_assets", column_name="image_path", column_sql="image_path TEXT NOT NULL DEFAULT ''")
     # legacy season reward tier rename: old 11-50 becomes 11-25
     connection.execute("UPDATE season_reward_tiers SET tier_key = 'T11_25' WHERE tier_key = 'T11_50' AND NOT EXISTS (SELECT 1 FROM season_reward_tiers WHERE tier_key = 'T11_25')")
-    # clan wars defense / anti-monopoly settings and migration
+    # RANKED MODE (раздел 0 плана): матчмейкинг делится на 'normal'/'ranked' в одной
+    # таблице очереди — по умолчанию 'normal', существующее поведение не меняется.
+    ensure_column(connection=connection, table_name="match_queue", column_name="mode", column_sql="mode TEXT NOT NULL DEFAULT 'normal'")
+
+    # RANKED SHOOTOUT MINI-GAME V10.8: persist regulation score, the visible
+    # shootout score and every 4-corner attempt. Existing rows remain ordinary
+    # non-shootout matches through safe defaults.
+    ensure_column(connection=connection, table_name="ranked_matches", column_name="is_shootout", column_sql="is_shootout INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection=connection, table_name="ranked_matches", column_name="regulation_user_score", column_sql="regulation_user_score INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection=connection, table_name="ranked_matches", column_name="regulation_opponent_score", column_sql="regulation_opponent_score INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection=connection, table_name="ranked_matches", column_name="shootout_user_goals", column_sql="shootout_user_goals INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection=connection, table_name="ranked_matches", column_name="shootout_opponent_goals", column_sql="shootout_opponent_goals INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection=connection, table_name="ranked_matches", column_name="shootout_log_json", column_sql="shootout_log_json TEXT NOT NULL DEFAULT '[]'")
+
+    migrate_cosmetic_catalog_shared_types(connection)
+
+    # BLACK MARKET: нужна общая точка активности пользователя для таргетинга
+    # уведомлений "активные за последние N дней" — раньше в проекте не было
+    # ни одного такого поля (каждая фича хранила свой локальный таймстамп).
+    ensure_column(connection=connection, table_name="users", column_name="last_active_at", column_sql="last_active_at TEXT")
+
+    from app.services.black_market_admin import seed_black_market_defaults
+    run_once(connection, "0003_black_market_seed_defaults", seed_black_market_defaults)
+
+    # BLACK MARKET: поля, добавленные при аудите после первого релиза (раздел 3/6/9
+    # ТЗ аудита) — ensure_column, т.к. на уже развёрнутых базах CREATE TABLE IF NOT
+    # EXISTS их не добавит. Значения по умолчанию сохраняют старое поведение как есть.
+    ensure_column(connection=connection, table_name="black_market_settings", column_name="shop_enabled", column_sql="shop_enabled INTEGER NOT NULL DEFAULT 1")
+    ensure_column(connection=connection, table_name="black_market_settings", column_name="last_notified_business_date", column_sql="last_notified_business_date TEXT")
+    ensure_column(connection=connection, table_name="black_market_pool_items", column_name="personal_purchase_limit", column_sql="personal_purchase_limit INTEGER NOT NULL DEFAULT 0")
+    ensure_column(connection=connection, table_name="black_market_pool_items", column_name="available_from", column_sql="available_from TEXT")
+    ensure_column(connection=connection, table_name="black_market_pool_items", column_name="available_until", column_sql="available_until TEXT")
+    ensure_column(connection=connection, table_name="black_market_pool_items", column_name="allow_repeat_in_rotation", column_sql="allow_repeat_in_rotation INTEGER NOT NULL DEFAULT 0")
+
+    from app.services.black_market_admin import seed_black_market_notification_baseline
+    run_once(connection, "0004_black_market_notification_baseline", seed_black_market_notification_baseline)
+
+    # STRONGHOLD GLOBAL TOWER SCHEDULE: единое расписание открытия крепостей (башен),
+    # см. app/services/stronghold_schedule.py. fortress_unlock_started_at NULL по
+    # умолчанию — компьютится как COALESCE(fortress_unlock_started_at, starts_at) на
+    # каждый расчёт, поэтому уже идущий сезон автоматически "восстанавливает" сколько
+    # башен должно быть открыто, без отдельного backfill UPDATE.
+    ensure_column(connection=connection, table_name="stronghold_events", column_name="fortress_unlock_started_at", column_sql="fortress_unlock_started_at TEXT")
+    ensure_column(connection=connection, table_name="stronghold_events", column_name="fortress_unlock_interval_seconds", column_sql="fortress_unlock_interval_seconds INTEGER NOT NULL DEFAULT 86400")
+    ensure_column(connection=connection, table_name="stronghold_events", column_name="fortress_unlock_timezone", column_sql="fortress_unlock_timezone TEXT NOT NULL DEFAULT 'UTC'")
+    ensure_column(connection=connection, table_name="stronghold_events", column_name="manual_unlock_override_count", column_sql="manual_unlock_override_count INTEGER NOT NULL DEFAULT 0")
+
+    # PACK OPENING VIDEO (rework): метаданные загруженного видео + флаг включения
+    # анимации на пак (см. app/services/packs.py, app/handlers/packs.py).
+    ensure_column(connection=connection, table_name="packs", column_name="animation_enabled", column_sql="animation_enabled INTEGER NOT NULL DEFAULT 1")
+    ensure_column(connection=connection, table_name="packs", column_name="animation_duration_seconds", column_sql="animation_duration_seconds INTEGER")
+    ensure_column(connection=connection, table_name="packs", column_name="animation_file_size", column_sql="animation_file_size INTEGER")
+    ensure_column(connection=connection, table_name="packs", column_name="animation_uploaded_at", column_sql="animation_uploaded_at TEXT")
+    ensure_column(connection=connection, table_name="packs", column_name="animation_uploaded_by", column_sql="animation_uploaded_by INTEGER")
+    ensure_column(connection=connection, table_name="packs", column_name="animation_file_id", column_sql="animation_file_id TEXT")
+    ensure_column(connection=connection, table_name="packs", column_name="animation_file_unique_id", column_sql="animation_file_unique_id TEXT")
+
+
+    # Current-project arena clan wars: defense, anti-monopoly and clan-season migration.
     ensure_column(connection=connection, table_name="clan_arenas", column_name="holder_captures_streak", column_sql="holder_captures_streak INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection=connection, table_name="clan_arenas", column_name="last_holder_clan_id", column_sql="last_holder_clan_id INTEGER")
     ensure_column(connection=connection, table_name="clan_arenas", column_name="protected_until", column_sql="protected_until TEXT")
@@ -130,6 +251,288 @@ def run_migrations(connection: sqlite3.Connection) -> None:
     ensure_column(connection=connection, table_name="clan_arena_attacks", column_name="effective_points", column_sql="effective_points INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection=connection, table_name="clan_seasons", column_name="reset_by_telegram_id", column_sql="reset_by_telegram_id INTEGER")
     connection.execute("UPDATE clan_arena_attacks SET effective_points = points WHERE effective_points = 0 AND points > 0")
+
+    # ЕДИНЫЙ ГЛОБАЛЬНЫЙ MATCH LOCK: player_match_locks/partial unique index уже
+    # создаются идемпотентно через SCHEMA_QUERIES (CREATE TABLE/INDEX IF NOT
+    # EXISTS) выше по стеку вызовов (init_database()). Здесь — одноразовый перенос
+    # уже существующих строк active_matches, см. docstring функции.
+    run_once(connection, "0006_migrate_active_matches_to_player_match_locks", migrate_active_matches_to_player_match_locks)
+
+
+
+
+def migrate_creator_weekly_claim_periods(connection: sqlite3.Connection) -> None:
+    """Allow one automatic creator payout per payout period, forever.
+
+    The legacy unique index used (user_id, bonus_type, level).  That made the
+    second weekly payout at the same creator level fail with UNIQUE constraint,
+    so automation could only work once per level.  Keep welcome bonuses unique
+    per level, but key weekly claims by a stable period_key instead.
+    """
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(creator_bonus_claims)").fetchall()}
+    if "period_key" not in columns:
+        connection.execute("ALTER TABLE creator_bonus_claims ADD COLUMN period_key TEXT NOT NULL DEFAULT ''")
+
+    # Give legacy weekly rows distinct synthetic periods so no historical claim
+    # is lost and the new weekly uniqueness constraint can be created safely.
+    connection.execute(
+        "UPDATE creator_bonus_claims SET period_key = 'legacy:' || id "
+        "WHERE bonus_type = 'weekly' AND COALESCE(period_key, '') = ''"
+    )
+
+    connection.execute("DROP INDEX IF EXISTS idx_creator_bonus_claims_unique")
+    connection.execute("DROP INDEX IF EXISTS idx_creator_bonus_claims_weekly_unique")
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_creator_bonus_claims_unique "
+        "ON creator_bonus_claims(user_id, bonus_type, level) WHERE bonus_type = 'welcome'"
+    )
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_creator_bonus_claims_weekly_unique "
+        "ON creator_bonus_claims(user_id, bonus_type, period_key) WHERE bonus_type = 'weekly'"
+    )
+
+def migrate_cards_allow_ovr_100(connection: sqlite3.Connection) -> None:
+    """Expand cards.overall CHECK from 99 to 100 without touching card IDs.
+
+    SQLite cannot ALTER a CHECK constraint in place.  The parent table is rebuilt
+    with foreign keys temporarily disabled; child tables keep referencing the table
+    name ``cards`` and all IDs/data remain unchanged.
+    """
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'"
+    ).fetchone()
+    if row is None:
+        return
+    sql = str(row["sql"] or "")
+    normalized = sql.replace(" ", "").lower()
+    if "between1and100" in normalized or "between1and110" in normalized:
+        return
+
+    # PRAGMA foreign_keys can only be changed outside an active transaction.
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.execute("DROP TABLE IF EXISTS cards__ovr100")
+        connection.execute(
+            """
+            CREATE TABLE cards__ovr100 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                player_key TEXT NOT NULL,
+                position TEXT NOT NULL CHECK(position IN ('G', 'D', 'F')),
+                overall INTEGER NOT NULL CHECK(overall BETWEEN 1 AND 100),
+                team TEXT NOT NULL,
+                country TEXT NOT NULL,
+                collection_id INTEGER NOT NULL,
+                rarity TEXT NOT NULL CHECK(rarity IN ('Common', 'Rare', 'Epic', 'Legendary', 'Event', 'Icon')),
+                image_path TEXT NOT NULL,
+                salary INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE RESTRICT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO cards__ovr100
+                (id, name, player_key, position, overall, team, country, collection_id,
+                 rarity, image_path, salary, active, created_at, updated_at)
+            SELECT id, name, player_key, position, overall, team, country, collection_id,
+                   rarity, image_path, salary, active, created_at, updated_at
+            FROM cards
+            """
+        )
+        connection.execute("DROP TABLE cards")
+        connection.execute("ALTER TABLE cards__ovr100 RENAME TO cards")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_cards_player_key ON cards(player_key)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_cards_collection_id ON cards(collection_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_cards_active ON cards(active)")
+        connection.commit()
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+
+    violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        raise RuntimeError(
+            f"cards OVR100 migration produced foreign-key violations: {len(violations)}"
+        )
+
+
+def migrate_cards_allow_ovr_110(connection: sqlite3.Connection) -> None:
+    """Expand cards.overall CHECK to 1..110 while preserving IDs and relations."""
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cards'"
+    ).fetchone()
+    if row is None:
+        return
+    sql = str(row["sql"] or "")
+    normalized = sql.replace(" ", "").lower()
+    if "between1and110" in normalized:
+        return
+
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.execute("DROP TABLE IF EXISTS cards__ovr110")
+        connection.execute(
+            """
+            CREATE TABLE cards__ovr110 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                player_key TEXT NOT NULL,
+                position TEXT NOT NULL CHECK(position IN ('G', 'D', 'F')),
+                overall INTEGER NOT NULL CHECK(overall BETWEEN 1 AND 110),
+                team TEXT NOT NULL,
+                country TEXT NOT NULL,
+                collection_id INTEGER NOT NULL,
+                rarity TEXT NOT NULL CHECK(rarity IN ('Common', 'Rare', 'Epic', 'Legendary', 'Event', 'Icon')),
+                image_path TEXT NOT NULL,
+                salary INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE RESTRICT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO cards__ovr110
+                (id, name, player_key, position, overall, team, country, collection_id,
+                 rarity, image_path, salary, active, created_at, updated_at)
+            SELECT id, name, player_key, position, overall, team, country, collection_id,
+                   rarity, image_path, salary, active, created_at, updated_at
+            FROM cards
+            """
+        )
+        connection.execute("DROP TABLE cards")
+        connection.execute("ALTER TABLE cards__ovr110 RENAME TO cards")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_cards_name ON cards(name)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_cards_player_key ON cards(player_key)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_cards_collection_id ON cards(collection_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_cards_active ON cards(active)")
+        connection.commit()
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
+
+    violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        raise RuntimeError(
+            f"cards OVR110 migration produced foreign-key violations: {len(violations)}"
+        )
+
+
+
+def migrate_active_matches_to_player_match_locks(connection: sqlite3.Connection) -> None:
+    """ЕДИНЫЙ ГЛОБАЛЬНЫЙ MATCH LOCK: переносит уже существующие строки старой
+    `active_matches` (PRIMARY KEY user_id — максимум одна строка на пользователя,
+    конфликтов по построению быть не может) в новую `player_match_locks`, откуда
+    их теперь читает app.services.match_guard.
+
+    Ничего не начисляется и не списывается — переносится только сам факт "у
+    пользователя был/есть активный матч", а является ли он ещё реально активным,
+    решает уже существующая логика recover_stale_matches() (вызывается при
+    старте бота, см. main.py) по тем же правилам, что и для любого другого
+    зависшего lock'а: сначала проверяется реальная запись матча, и только если
+    она отсутствует/завершена — lock закрывается. `active_matches` НЕ удаляется
+    и не изменяется (история сохраняется, раздел ТЗ "без удаления пользовательских
+    данных"). Идемпотентно за счёт `run_once()`-реестра миграций — этот код
+    выполнится ровно один раз для конкретной базы.
+    """
+    from app.services.match_guard import DEFAULT_TTL_SECONDS
+
+    rows = connection.execute("SELECT user_id, started_at FROM active_matches").fetchall()
+    migrated = 0
+    skipped_conflict = 0
+
+    for row in rows:
+        user_id = int(row["user_id"])
+        started_at = row["started_at"] or "1970-01-01 00:00:00"
+
+        existing_active = connection.execute(
+            """
+            SELECT id FROM player_match_locks
+            WHERE user_id = ? AND status IN ('ACQUIRING', 'ACTIVE', 'RESOLVING')
+            """,
+            (user_id,),
+        ).fetchone()
+        if existing_active is not None:
+            # Не должно происходить на пустой новой таблице, но если произошло —
+            # не создаём конфликтующую запись вслепую, помечаем для диагностики.
+            skipped_conflict += 1
+            logger.warning(
+                "migrate_active_matches_to_player_match_locks: user_id=%s already has an active "
+                "player_match_locks row (id=%s) — skipped legacy active_matches row for manual diagnostics",
+                user_id, existing_active["id"],
+            )
+            continue
+
+        try:
+            connection.execute(
+                """
+                INSERT INTO player_match_locks
+                    (user_id, match_id, match_type, status, request_id, acquired_at, heartbeat_at, expires_at, release_reason)
+                VALUES (?, NULL, 'legacy_migrated', 'ACTIVE', NULL, ?, ?, datetime(?, ?), NULL)
+                """,
+                (user_id, started_at, started_at, started_at, f"+{DEFAULT_TTL_SECONDS} seconds"),
+            )
+            migrated += 1
+        except sqlite3.IntegrityError as error:
+            skipped_conflict += 1
+            logger.warning(
+                "migrate_active_matches_to_player_match_locks: failed to migrate user_id=%s: %s", user_id, error
+            )
+
+    logger.warning(
+        "migrate_active_matches_to_player_match_locks: report — found=%d migrated=%d skipped_for_manual_diagnostics=%d",
+        len(rows), migrated, skipped_conflict,
+    )
+
+
+def migrate_cosmetic_catalog_shared_types(connection: sqlite3.Connection) -> None:
+    """RANKED MODE: каталог косметики war2_cosmetic_items изначально создавался только
+    для CLAN WAR 2.0 (CHECK type IN FRAME/BACKGROUND/NICK_BADGE). Ranked Mode добавляет
+    CARD_FRAME/PROFILE_BACKGROUND/TITLE — CHECK-ограничение SQLite нельзя ALTER'ом,
+    только пересозданием таблицы. Название таблицы намеренно НЕ меняется (осталось
+    war2_cosmetic_items) — это избегает пересборки user_cosmetic_items.cosmetic_item_id
+    FK (которая по имени ссылается на эту же таблицу и продолжает работать без
+    изменений после DROP+CREATE с тем же именем). На новых базах CREATE_WAR2_COSMETIC_ITEMS_TABLE
+    уже создаёт таблицу сразу с полным списком типов — эта функция реально что-то
+    делает только на базах, где таблица была создана до Ranked Mode."""
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'war2_cosmetic_items'"
+    ).fetchone()
+    if row is None or "CARD_FRAME" in (row["sql"] or ""):
+        return  # таблицы ещё нет (создастся сразу актуальной) или уже мигрирована
+
+    connection.execute(
+        """
+        CREATE TABLE war2_cosmetic_items__rebuild (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL CHECK(type IN ('FRAME', 'BACKGROUND', 'NICK_BADGE', 'CARD_FRAME', 'PROFILE_BACKGROUND', 'TITLE')),
+            code TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            rarity TEXT NOT NULL CHECK(rarity IN ('Common', 'Rare', 'Epic', 'Legendary', 'Event', 'Icon')) DEFAULT 'Common',
+            image_path TEXT,
+            badge_text TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        "INSERT INTO war2_cosmetic_items__rebuild "
+        "(id, type, code, title, description, rarity, image_path, badge_text, active, created_at, updated_at) "
+        "SELECT id, type, code, title, description, rarity, image_path, badge_text, active, created_at, updated_at "
+        "FROM war2_cosmetic_items"
+    )
+    connection.execute("DROP TABLE war2_cosmetic_items")
+    connection.execute("ALTER TABLE war2_cosmetic_items__rebuild RENAME TO war2_cosmetic_items")
 
 
 def build_placeholders(values: Sequence[str]) -> str:
@@ -280,6 +683,8 @@ def seed_default_season_reward_tiers(connection: sqlite3.Connection) -> None:
             "INSERT INTO season_reward_tiers (tier_key, coins, rubles, pack_id) VALUES (?, ?, ?, ?) ON CONFLICT(tier_key) DO NOTHING",
             (tier_key, coins, rubles, pack_id),
         )
+
+
 
 
 

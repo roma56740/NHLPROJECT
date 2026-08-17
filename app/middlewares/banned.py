@@ -4,7 +4,6 @@ from typing import Any
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from app.services.settings import is_maintenance_mode_enabled
 from app.services.subscription import (
     SUBSCRIPTION_CHECK_CALLBACK,
     build_subscription_keyboard,
@@ -29,15 +28,6 @@ BANNED_PLAYER_TEXT = """
 
 BANNED_PLAYER_ALERT = "🚫 Доступ к аккаунту временно ограничен."
 
-MAINTENANCE_TEXT = """
-<b>🛠 Лига на обновлении</b>
-
-Сейчас идёт короткое обслуживание.
-Скоро всё снова будет доступно.
-""".strip()
-
-MAINTENANCE_ALERT = "🛠 Сейчас идёт обслуживание лиги."
-
 
 class BannedPlayerMiddleware(BaseMiddleware):
     async def __call__(
@@ -54,17 +44,10 @@ class BannedPlayerMiddleware(BaseMiddleware):
         if is_admin(telegram_user.id):
             return await handler(event, data)
 
-        if await is_maintenance_mode_enabled():
-            if isinstance(event, Message):
-                await safe_delete_message(event)
-                await event.answer(MAINTENANCE_TEXT)
-                return None
-
-            if isinstance(event, CallbackQuery):
-                await event.answer(MAINTENANCE_ALERT, show_alert=True)
-                return None
-
-            return None
+        # Технический перерыв теперь обрабатывается отдельным, более ранним
+        # MaintenanceModeMiddleware (app/middlewares/maintenance.py) — этот Update
+        # сюда вообще не доходит, пока технический перерыв включён и пользователь
+        # не администратор. Раздельная проверка здесь больше не нужна.
 
         if await is_player_banned(telegram_user.id):
             if isinstance(event, Message):
@@ -78,7 +61,7 @@ class BannedPlayerMiddleware(BaseMiddleware):
 
             return None
 
-        if isinstance(event, CallbackQuery) and event.data == SUBSCRIPTION_CHECK_CALLBACK:
+        if isinstance(event, CallbackQuery) and str(event.data or "").startswith(SUBSCRIPTION_CHECK_CALLBACK):
             return await handler(event, data)
 
         subscription_settings = await get_subscription_settings()
@@ -89,7 +72,13 @@ class BannedPlayerMiddleware(BaseMiddleware):
                 await safe_delete_message(event)
                 banner = get_start_banner_file(subscription_settings)
                 text = build_subscription_text(subscription_settings)
-                keyboard = build_subscription_keyboard(subscription_settings)
+                return_payload = None
+                raw_text = (event.text or "").strip()
+                if raw_text.startswith("/start "):
+                    candidate = raw_text.split(maxsplit=1)[1].strip()
+                    if len(candidate) <= 40 and all(ch.isalnum() or ch in "_-" for ch in candidate):
+                        return_payload = candidate
+                keyboard = build_subscription_keyboard(subscription_settings, return_payload=return_payload)
 
                 if banner is not None:
                     await event.answer_photo(photo=banner, caption=text, reply_markup=keyboard)

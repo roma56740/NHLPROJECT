@@ -22,6 +22,7 @@ SETTING_KEYS = [
     ("subscription_channel_url", "🔗 Ссылка на канал"),
     ("start_banner_path", "🖼 Стартовая картинка"),
     ("pack_animation_step_delay_ms", "✨ Скорость анимации"),
+    ("ranked_shootout_chance_percent", "🎯 Шанс буллитов Ranked"),
 ]
 
 
@@ -34,6 +35,7 @@ def build_admin_settings_keyboard() -> InlineKeyboardMarkup:
         else:
             rows.append([InlineKeyboardButton(text=title, callback_data=f"admin_settings:edit:{key}")])
 
+    rows.append([InlineKeyboardButton(text="🛠 Технический перерыв (текст/фото/история)", callback_data="admin_maintenance:main")])
     rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_settings:main")])
     rows.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

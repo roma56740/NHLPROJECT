@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.database.db import DATABASE_PATH, get_connection
 from app.texts.admin_panel import AdminListItem, AdminSummary
+from app.services import audit_log
 from app.services.admin_permissions import ADMIN_ROLE_OWNER, ADMIN_ROLE_SENIOR, ADMIN_ROLE_CONTENT, get_admin_role_title, normalize_admin_role
 from config import settings
 
@@ -110,10 +111,11 @@ async def add_admin(telegram_id: int, added_by_telegram_id: int | None, role: st
             """,
             (telegram_id, added_by_telegram_id, role),
         )
+        audit_log.record(connection, added_by_telegram_id, 'admin_added', 'bot_admin', telegram_id, {'role': role})
         connection.commit()
 
 
-async def update_admin_role(telegram_id: int, role: str) -> bool:
+async def update_admin_role(telegram_id: int, role: str, actor_user_id: int | None = None) -> bool:
     if telegram_id in set(settings.admin_ids):
         return False
 
@@ -129,11 +131,13 @@ async def update_admin_role(telegram_id: int, role: str) -> bool:
             """,
             (role, telegram_id),
         )
+        if cursor.rowcount > 0:
+            audit_log.record(connection, actor_user_id, 'admin_role_changed', 'bot_admin', telegram_id, {'role': role})
         connection.commit()
         return cursor.rowcount > 0
 
 
-async def remove_admin(telegram_id: int) -> bool:
+async def remove_admin(telegram_id: int, actor_user_id: int | None = None) -> bool:
     if telegram_id in set(settings.admin_ids):
         return False
 
@@ -147,6 +151,8 @@ async def remove_admin(telegram_id: int) -> bool:
             """,
             (telegram_id,),
         )
+        if cursor.rowcount > 0:
+            audit_log.record(connection, actor_user_id, 'admin_removed', 'bot_admin', telegram_id)
         connection.commit()
         return cursor.rowcount > 0
 

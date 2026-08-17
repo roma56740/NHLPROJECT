@@ -6,6 +6,8 @@ from typing import Literal
 
 from app.database.db import get_connection
 from app.services.admin_users import clean_search_query
+from app.services.card_sorting import get_user_card_sort_order, order_by_overall
+from app.services.war2_cosmetics import canonical_cosmetic_type, cosmetic_type_title
 
 COMMUNITY_PER_PAGE = 5
 CLAN_MAX_MEMBERS = 10
@@ -87,6 +89,7 @@ class TradeUserCardsPage:
     total_count: int
     search: str | None
     selected_ids: list[int]
+    sort_order: str = "ovr_desc"
 
 
 @dataclass(frozen=True)
@@ -108,6 +111,48 @@ class TradeCardChoicesPage:
     total_count: int
     search: str | None
     selected_card_ids: list[int]
+    sort_order: str = "ovr_desc"
+
+
+@dataclass(frozen=True)
+class TradeCosmeticItem:
+    id: int
+    cosmetic_item_id: int
+    type: str
+    title: str
+    rarity: str
+    badge_text: str | None
+    equipped: bool = False
+    bound_user_card_id: int | None = None
+
+
+@dataclass(frozen=True)
+class TradeCosmeticsPage:
+    items: list[TradeCosmeticItem]
+    page: int
+    pages_count: int
+    total_count: int
+    search: str | None
+    selected_ids: list[int]
+
+
+@dataclass(frozen=True)
+class TradeCosmeticChoiceItem:
+    id: int
+    type: str
+    title: str
+    rarity: str
+    badge_text: str | None
+
+
+@dataclass(frozen=True)
+class TradeCosmeticChoicesPage:
+    items: list[TradeCosmeticChoiceItem]
+    page: int
+    pages_count: int
+    total_count: int
+    search: str | None
+    selected_item_ids: list[int]
 
 
 @dataclass(frozen=True)
@@ -118,12 +163,15 @@ class TradeOfferListItem:
     target_user_id: int | None
     target_nickname: str | None
     wanted_type: str
+    wanted_asset_type: str
     wanted_currency_code: str | None
     wanted_currency_icon: str | None
     wanted_currency_name: str | None
     wanted_currency_amount: int
     offered_count: int
+    offered_cosmetics_count: int
     wanted_cards_count: int
+    wanted_cosmetics_count: int
     status: str
     created_at: str
 
@@ -147,6 +195,7 @@ class TradeOfferProfile:
     accepted_by_user_id: int | None
     accepted_by_nickname: str | None
     wanted_type: str
+    wanted_asset_type: str
     wanted_currency_code: str | None
     wanted_currency_icon: str | None
     wanted_currency_name: str | None
@@ -155,7 +204,9 @@ class TradeOfferProfile:
     created_at: str
     accepted_at: str | None
     offered_cards: list[TradeUserCardItem]
+    offered_cosmetics: list[TradeCosmeticItem]
     wanted_cards: list[tuple[TradeCardChoiceItem, int]]
+    wanted_cosmetics: list[tuple[TradeCosmeticChoiceItem, int]]
 
 
 @dataclass(frozen=True)
@@ -219,6 +270,10 @@ def normalize_ids(values: list[int] | None) -> list[int]:
         if value not in clean_values:
             clean_values.append(int(value))
     return clean_values[:TRADE_CARD_LIMIT]
+
+
+def normalize_cosmetic_ids(values: list[int] | None) -> list[int]:
+    return normalize_ids(values)
 
 
 def get_user_id_by_telegram_id(telegram_id: int) -> int | None:
@@ -491,6 +546,8 @@ async def get_available_user_cards_page(
     selected_ids = normalize_ids(selected_ids)
     clean_search = clean_search_query(search)
     where_sql, params = build_available_cards_filter(user_id, clean_search, selected_ids)
+    sort_order = await get_user_card_sort_order(user_id)
+    order_sql = order_by_overall(sort_order, card_alias="cards")
 
     with get_connection() as connection:
         total_count = int(connection.execute(
@@ -514,7 +571,7 @@ async def get_available_user_cards_page(
             JOIN cards ON cards.id = user_cards.card_id
             JOIN collections ON collections.id = cards.collection_id
             {where_sql}
-            ORDER BY cards.overall DESC, user_cards.id DESC
+            ORDER BY {order_sql}, user_cards.id DESC
             LIMIT ? OFFSET ?
             """,
             [*params, per_page, offset],
@@ -527,6 +584,7 @@ async def get_available_user_cards_page(
         total_count=total_count,
         search=clean_search,
         selected_ids=selected_ids,
+        sort_order=sort_order,
     )
 
 
@@ -549,6 +607,8 @@ async def get_selected_user_cards(user_id: int, selected_ids: list[int]) -> list
         return []
 
     placeholders = ",".join("?" for _ in selected_ids)
+    sort_order = await get_user_card_sort_order(user_id)
+    order_sql = order_by_overall(sort_order, card_alias="cards")
     with get_connection() as connection:
         rows = connection.execute(
             f"""
@@ -558,7 +618,7 @@ async def get_selected_user_cards(user_id: int, selected_ids: list[int]) -> list
             JOIN cards ON cards.id = user_cards.card_id
             JOIN collections ON collections.id = cards.collection_id
             WHERE user_cards.user_id = ? AND user_cards.id IN ({placeholders})
-            ORDER BY cards.overall DESC
+            ORDER BY {order_sql}
             """,
             [user_id, *selected_ids],
         ).fetchall()
@@ -583,10 +643,18 @@ def build_card_choice_filter(search: str | None) -> tuple[str, list[object]]:
     """, [f"%{clean_search}%"] * 5
 
 
-async def get_card_choices_page(page: int = 1, per_page: int = COMMUNITY_PER_PAGE, search: str | None = None, selected_card_ids: list[int] | None = None) -> TradeCardChoicesPage:
+async def get_card_choices_page(
+    page: int = 1,
+    per_page: int = COMMUNITY_PER_PAGE,
+    search: str | None = None,
+    selected_card_ids: list[int] | None = None,
+    user_id: int | None = None,
+) -> TradeCardChoicesPage:
     clean_search = clean_search_query(search)
     selected_card_ids = normalize_ids(selected_card_ids)
     where_sql, params = build_card_choice_filter(clean_search)
+    sort_order = await get_user_card_sort_order(user_id) if user_id is not None else "ovr_desc"
+    order_sql = order_by_overall(sort_order, card_alias="cards")
 
     with get_connection() as connection:
         total_count = int(connection.execute(
@@ -603,7 +671,7 @@ async def get_card_choices_page(page: int = 1, per_page: int = COMMUNITY_PER_PAG
             FROM cards
             JOIN collections ON collections.id = cards.collection_id
             {where_sql}
-            ORDER BY cards.overall DESC, cards.id DESC
+            ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             """,
             [*params, per_page, offset],
@@ -616,6 +684,7 @@ async def get_card_choices_page(page: int = 1, per_page: int = COMMUNITY_PER_PAG
         total_count=total_count,
         search=clean_search,
         selected_card_ids=selected_card_ids,
+        sort_order=sort_order,
     )
 
 
@@ -631,11 +700,13 @@ def trade_card_choice_from_row(row) -> TradeCardChoiceItem:
     )
 
 
-async def get_selected_card_choices(selected_card_ids: list[int]) -> list[TradeCardChoiceItem]:
+async def get_selected_card_choices(selected_card_ids: list[int], user_id: int | None = None) -> list[TradeCardChoiceItem]:
     selected_card_ids = normalize_ids(selected_card_ids)
     if not selected_card_ids:
         return []
     placeholders = ",".join("?" for _ in selected_card_ids)
+    sort_order = await get_user_card_sort_order(user_id) if user_id is not None else "ovr_desc"
+    order_sql = order_by_overall(sort_order, card_alias="cards")
     with get_connection() as connection:
         rows = connection.execute(
             f"""
@@ -644,11 +715,169 @@ async def get_selected_card_choices(selected_card_ids: list[int]) -> list[TradeC
             FROM cards
             JOIN collections ON collections.id = cards.collection_id
             WHERE cards.id IN ({placeholders}) AND cards.active = 1
-            ORDER BY cards.overall DESC
+            ORDER BY {order_sql}
             """,
             selected_card_ids,
         ).fetchall()
     return [trade_card_choice_from_row(row) for row in rows]
+
+
+def trade_cosmetic_from_row(row) -> TradeCosmeticItem:
+    keys = row.keys()
+    return TradeCosmeticItem(
+        id=int(row["id"]),
+        cosmetic_item_id=int(row["cosmetic_item_id"]),
+        type=canonical_cosmetic_type(row["type"]),
+        title=row["title"],
+        rarity=row["rarity"],
+        badge_text=row["badge_text"],
+        equipped=bool(row["equipped"]) if "equipped" in keys else False,
+        bound_user_card_id=(int(row["bound_user_card_id"]) if "bound_user_card_id" in keys and row["bound_user_card_id"] is not None else None),
+    )
+
+
+def trade_cosmetic_choice_from_row(row) -> TradeCosmeticChoiceItem:
+    return TradeCosmeticChoiceItem(
+        id=int(row["id"]),
+        type=canonical_cosmetic_type(row["type"]),
+        title=row["title"],
+        rarity=row["rarity"],
+        badge_text=row["badge_text"],
+    )
+
+
+async def get_available_user_cosmetics_page(
+    user_id: int,
+    page: int = 1,
+    per_page: int = COMMUNITY_PER_PAGE,
+    search: str | None = None,
+    selected_ids: list[int] | None = None,
+) -> TradeCosmeticsPage:
+    selected_ids = normalize_cosmetic_ids(selected_ids)
+    clean_search = clean_search_query(search)
+    filters = [
+        "uci.owner_id = ?",
+        "uci.trade_locked = 0",
+        "uci.equipped = 0",
+        "wci.active = 1",
+        "ucf.id IS NULL",
+        "NOT EXISTS (SELECT 1 FROM trade_offer_cosmetics toc JOIN trade_offers t ON t.id = toc.offer_id WHERE toc.user_cosmetic_item_id = uci.id AND t.status = 'open')",
+    ]
+    params: list[object] = [user_id]
+    if selected_ids:
+        placeholders = ",".join("?" for _ in selected_ids)
+        filters.append(f"uci.id NOT IN ({placeholders})")
+        params.extend(selected_ids)
+    if clean_search:
+        filters.append("(wci.title LIKE ? OR wci.rarity LIKE ? OR wci.badge_text LIKE ? OR wci.type LIKE ?)")
+        params.extend([f"%{clean_search}%"] * 4)
+    where_sql = "WHERE " + " AND ".join(filters)
+
+    with get_connection() as connection:
+        total_count = int(connection.execute(
+            f"""SELECT COUNT(*) AS total_count
+                FROM user_cosmetic_items uci
+                JOIN war2_cosmetic_items wci ON wci.id = uci.cosmetic_item_id
+                LEFT JOIN user_card_frames ucf ON ucf.user_cosmetic_item_id = uci.id
+                {where_sql}""",
+            params,
+        ).fetchone()["total_count"])
+        pages_count = max(1, ceil(total_count / per_page))
+        safe_page = min(max(page, 1), pages_count)
+        offset = (safe_page - 1) * per_page
+        rows = connection.execute(
+            f"""
+            SELECT uci.id, uci.cosmetic_item_id, uci.type, uci.rarity, uci.equipped,
+                   wci.title, wci.badge_text, ucf.user_card_id AS bound_user_card_id
+            FROM user_cosmetic_items uci
+            JOIN war2_cosmetic_items wci ON wci.id = uci.cosmetic_item_id
+            LEFT JOIN user_card_frames ucf ON ucf.user_cosmetic_item_id = uci.id
+            {where_sql}
+            ORDER BY wci.type, wci.title, uci.id
+            LIMIT ? OFFSET ?
+            """,
+            [*params, per_page, offset],
+        ).fetchall()
+    return TradeCosmeticsPage(
+        items=[trade_cosmetic_from_row(row) for row in rows],
+        page=safe_page,
+        pages_count=pages_count,
+        total_count=total_count,
+        search=clean_search,
+        selected_ids=selected_ids,
+    )
+
+
+async def get_selected_user_cosmetics(user_id: int, selected_ids: list[int]) -> list[TradeCosmeticItem]:
+    selected_ids = normalize_cosmetic_ids(selected_ids)
+    if not selected_ids:
+        return []
+    placeholders = ",".join("?" for _ in selected_ids)
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT uci.id, uci.cosmetic_item_id, uci.type, uci.rarity, uci.equipped,
+                   wci.title, wci.badge_text, ucf.user_card_id AS bound_user_card_id
+            FROM user_cosmetic_items uci
+            JOIN war2_cosmetic_items wci ON wci.id = uci.cosmetic_item_id
+            LEFT JOIN user_card_frames ucf ON ucf.user_cosmetic_item_id = uci.id
+            WHERE uci.owner_id = ? AND uci.id IN ({placeholders})
+            ORDER BY wci.type, wci.title, uci.id
+            """,
+            [user_id, *selected_ids],
+        ).fetchall()
+    return [trade_cosmetic_from_row(row) for row in rows]
+
+
+async def get_cosmetic_choices_page(
+    page: int = 1,
+    per_page: int = COMMUNITY_PER_PAGE,
+    search: str | None = None,
+    selected_item_ids: list[int] | None = None,
+) -> TradeCosmeticChoicesPage:
+    selected_item_ids = normalize_cosmetic_ids(selected_item_ids)
+    clean_search = clean_search_query(search)
+    filters = ["active = 1"]
+    params: list[object] = []
+    if clean_search:
+        filters.append("(title LIKE ? OR rarity LIKE ? OR badge_text LIKE ? OR type LIKE ?)")
+        params.extend([f"%{clean_search}%"] * 4)
+    where_sql = "WHERE " + " AND ".join(filters)
+    with get_connection() as connection:
+        total_count = int(connection.execute(
+            f"SELECT COUNT(*) AS total_count FROM war2_cosmetic_items {where_sql}", params
+        ).fetchone()["total_count"])
+        pages_count = max(1, ceil(total_count / per_page))
+        safe_page = min(max(page, 1), pages_count)
+        offset = (safe_page - 1) * per_page
+        rows = connection.execute(
+            f"""SELECT id, type, title, rarity, badge_text
+                FROM war2_cosmetic_items {where_sql}
+                ORDER BY type, title, id
+                LIMIT ? OFFSET ?""",
+            [*params, per_page, offset],
+        ).fetchall()
+    return TradeCosmeticChoicesPage(
+        items=[trade_cosmetic_choice_from_row(row) for row in rows],
+        page=safe_page,
+        pages_count=pages_count,
+        total_count=total_count,
+        search=clean_search,
+        selected_item_ids=selected_item_ids,
+    )
+
+
+async def get_selected_cosmetic_choices(selected_item_ids: list[int]) -> list[TradeCosmeticChoiceItem]:
+    selected_item_ids = normalize_cosmetic_ids(selected_item_ids)
+    if not selected_item_ids:
+        return []
+    placeholders = ",".join("?" for _ in selected_item_ids)
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"SELECT id, type, title, rarity, badge_text FROM war2_cosmetic_items WHERE id IN ({placeholders}) AND active = 1 ORDER BY type, title, id",
+            selected_item_ids,
+        ).fetchall()
+    return [trade_cosmetic_choice_from_row(row) for row in rows]
 
 
 def get_user_trade_info(connection, user_id: int):
@@ -674,113 +903,181 @@ def build_direct_trade_notification(creator_nickname: str, offer_id: int) -> str
 
 async def create_trade_offer(
     creator_user_id: int,
-    offered_user_card_ids: list[int],
+    offered_user_card_ids: list[int] | None,
     wanted_type: Literal["cards", "currency"],
     wanted_card_ids: list[int] | None = None,
     wanted_currency_code: str | None = None,
     wanted_currency_amount: int = 0,
     target_user_id: int | None = None,
+    offered_user_cosmetic_ids: list[int] | None = None,
+    wanted_cosmetic_item_ids: list[int] | None = None,
+    wanted_asset_type: Literal["cards", "cosmetics"] = "cards",
 ) -> CommunityActionResult:
     offered_user_card_ids = normalize_ids(offered_user_card_ids)
+    offered_user_cosmetic_ids = normalize_cosmetic_ids(offered_user_cosmetic_ids)
     wanted_card_ids = normalize_ids(wanted_card_ids)
+    wanted_cosmetic_item_ids = normalize_cosmetic_ids(wanted_cosmetic_item_ids)
+    wanted_asset_type = "cosmetics" if wanted_asset_type == "cosmetics" else "cards"
 
-    if not offered_user_card_ids:
-        return CommunityActionResult(False, "Обмен не создан", "Выбери хотя бы одну карточку для обмена.")
+    if not offered_user_card_ids and not offered_user_cosmetic_ids:
+        return CommunityActionResult(False, "Обмен не создан", "Выбери хотя бы одну карточку или косметический предмет.")
 
-    if wanted_type == "cards" and not wanted_card_ids:
-        return CommunityActionResult(False, "Обмен не создан", "Выбери карточки, на которые хочешь обменяться.")
+    if wanted_type == "cards":
+        if wanted_asset_type == "cards" and not wanted_card_ids:
+            return CommunityActionResult(False, "Обмен не создан", "Выбери карточки, на которые хочешь обменяться.")
+        if wanted_asset_type == "cosmetics" and not wanted_cosmetic_item_ids:
+            return CommunityActionResult(False, "Обмен не создан", "Выбери косметику, которую хочешь получить.")
 
     if wanted_type == "currency" and (not wanted_currency_code or wanted_currency_amount <= 0):
         return CommunityActionResult(False, "Обмен не создан", "Укажи валюту и сумму для обмена.")
 
     with get_connection() as connection:
-        creator_row = get_user_trade_info(connection, creator_user_id)
-        if creator_row is None or bool(creator_row["trade_blocked"]):
-            return CommunityActionResult(False, "Обмены закрыты", "Сейчас обмены для игрока недоступны.")
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            creator_row = get_user_trade_info(connection, creator_user_id)
+            if creator_row is None or bool(creator_row["trade_blocked"]):
+                connection.rollback()
+                return CommunityActionResult(False, "Обмены закрыты", "Сейчас обмены для игрока недоступны.")
 
-        target_row = None
-        if target_user_id is not None:
-            if target_user_id == creator_user_id:
-                return CommunityActionResult(False, "Обмен не создан", "Нельзя отправить личный обмен самому себе.")
-            target_row = get_user_trade_info(connection, target_user_id)
-            if target_row is None or bool(target_row["is_banned"]):
-                return CommunityActionResult(False, "Игрок не найден", "Выбранный игрок сейчас недоступен.")
-            if not bool(target_row["privacy_public_cards"]):
-                return CommunityActionResult(False, "Обмен не создан", "Игрок скрыл коллекцию карточек, поэтому личный обмен ему недоступен.")
-            if bool(target_row["trade_blocked"]):
-                return CommunityActionResult(False, "Обмен не создан", "У выбранного игрока сейчас закрыты обмены.")
+            target_row = None
+            if target_user_id is not None:
+                if target_user_id == creator_user_id:
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен не создан", "Нельзя отправить личный обмен самому себе.")
+                target_row = get_user_trade_info(connection, target_user_id)
+                if target_row is None or bool(target_row["is_banned"]):
+                    connection.rollback()
+                    return CommunityActionResult(False, "Игрок не найден", "Выбранный игрок сейчас недоступен.")
+                involves_cards = bool(offered_user_card_ids or (wanted_type == "cards" and wanted_asset_type == "cards"))
+                if involves_cards and not bool(target_row["privacy_public_cards"]):
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен не создан", "Игрок скрыл коллекцию карточек. Косметический обмен без карточек остаётся доступным.")
+                if bool(target_row["trade_blocked"]):
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен не создан", "У выбранного игрока сейчас закрыты обмены.")
 
-        placeholders = ",".join("?" for _ in offered_user_card_ids)
-        rows = connection.execute(
-            f"""
-            SELECT user_cards.id
-            FROM user_cards
-            JOIN cards ON cards.id = user_cards.card_id
-            WHERE user_cards.user_id = ?
-              AND user_cards.id IN ({placeholders})
-              AND user_cards.is_in_lineup = 0
-              AND user_cards.trade_locked = 0
-              AND cards.active = 1
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM trade_offer_cards toc
-                  JOIN trade_offers t ON t.id = toc.offer_id
-                  WHERE toc.user_card_id = user_cards.id AND t.status = 'open'
-              )
-            """,
-            [creator_user_id, *offered_user_card_ids],
-        ).fetchall()
-        if len(rows) != len(offered_user_card_ids):
-            return CommunityActionResult(False, "Обмен не создан", "Одна из карточек уже занята, стоит в составе или недоступна.")
-
-        if wanted_type == "currency":
-            currency_row = connection.execute(
-                "SELECT code FROM currencies WHERE code = ? AND active = 1",
-                (wanted_currency_code,),
-            ).fetchone()
-            if currency_row is None:
-                return CommunityActionResult(False, "Обмен не создан", "Выбранная валюта сейчас недоступна.")
-
-        cursor = connection.execute(
-            """
-            INSERT INTO trade_offers (
-                creator_user_id,
-                target_user_id,
-                wanted_type,
-                wanted_currency_code,
-                wanted_currency_amount,
-                status
-            )
-            VALUES (?, ?, ?, ?, ?, 'open')
-            """,
-            (
-                creator_user_id,
-                target_user_id,
-                wanted_type,
-                wanted_currency_code if wanted_type == "currency" else None,
-                wanted_currency_amount if wanted_type == "currency" else 0,
-            ),
-        )
-        offer_id = int(cursor.lastrowid)
-
-        for user_card_id in offered_user_card_ids:
-            connection.execute(
-                "INSERT INTO trade_offer_cards (offer_id, user_card_id) VALUES (?, ?)",
-                (offer_id, user_card_id),
-            )
-
-        if wanted_type == "cards":
-            for card_id in wanted_card_ids:
-                connection.execute(
-                    """
-                    INSERT INTO trade_offer_wanted_cards (offer_id, card_id, quantity)
-                    VALUES (?, ?, 1)
-                    ON CONFLICT(offer_id, card_id) DO UPDATE SET quantity = quantity + 1
+            if offered_user_card_ids:
+                placeholders = ",".join("?" for _ in offered_user_card_ids)
+                rows = connection.execute(
+                    f"""
+                    SELECT user_cards.id
+                    FROM user_cards
+                    JOIN cards ON cards.id = user_cards.card_id
+                    WHERE user_cards.user_id = ?
+                      AND user_cards.id IN ({placeholders})
+                      AND user_cards.is_in_lineup = 0
+                      AND user_cards.trade_locked = 0
+                      AND cards.active = 1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM trade_offer_cards toc
+                          JOIN trade_offers t ON t.id = toc.offer_id
+                          WHERE toc.user_card_id = user_cards.id AND t.status = 'open'
+                      )
                     """,
-                    (offer_id, card_id),
+                    [creator_user_id, *offered_user_card_ids],
+                ).fetchall()
+                if len(rows) != len(offered_user_card_ids):
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен не создан", "Одна из карточек уже занята, стоит в составе или недоступна.")
+
+            if offered_user_cosmetic_ids:
+                placeholders = ",".join("?" for _ in offered_user_cosmetic_ids)
+                rows = connection.execute(
+                    f"""
+                    SELECT uci.id
+                    FROM user_cosmetic_items uci
+                    JOIN war2_cosmetic_items wci ON wci.id = uci.cosmetic_item_id
+                    LEFT JOIN user_card_frames ucf ON ucf.user_cosmetic_item_id = uci.id
+                    WHERE uci.owner_id = ?
+                      AND uci.id IN ({placeholders})
+                      AND uci.trade_locked = 0
+                      AND uci.equipped = 0
+                      AND ucf.id IS NULL
+                      AND wci.active = 1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM trade_offer_cosmetics toc
+                          JOIN trade_offers t ON t.id = toc.offer_id
+                          WHERE toc.user_cosmetic_item_id = uci.id AND t.status = 'open'
+                      )
+                    """,
+                    [creator_user_id, *offered_user_cosmetic_ids],
+                ).fetchall()
+                if len(rows) != len(offered_user_cosmetic_ids):
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен не создан", "Один из экземпляров косметики экипирован, установлен на карту или уже участвует в обмене.")
+
+            if wanted_type == "currency":
+                currency_row = connection.execute(
+                    "SELECT code FROM currencies WHERE code = ? AND active = 1",
+                    (wanted_currency_code,),
+                ).fetchone()
+                if currency_row is None:
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен не создан", "Выбранная валюта сейчас недоступна.")
+            elif wanted_asset_type == "cosmetics":
+                placeholders = ",".join("?" for _ in wanted_cosmetic_item_ids)
+                valid_count = int(connection.execute(
+                    f"SELECT COUNT(*) AS total_count FROM war2_cosmetic_items WHERE id IN ({placeholders}) AND active = 1",
+                    wanted_cosmetic_item_ids,
+                ).fetchone()["total_count"])
+                if valid_count != len(wanted_cosmetic_item_ids):
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен не создан", "Один из выбранных косметических предметов недоступен.")
+
+            cursor = connection.execute(
+                """
+                INSERT INTO trade_offers (
+                    creator_user_id, target_user_id, wanted_type, wanted_asset_type,
+                    wanted_currency_code, wanted_currency_amount, status
+                ) VALUES (?, ?, ?, ?, ?, ?, 'open')
+                """,
+                (
+                    creator_user_id,
+                    target_user_id,
+                    wanted_type,
+                    wanted_asset_type if wanted_type == "cards" else "cards",
+                    wanted_currency_code if wanted_type == "currency" else None,
+                    wanted_currency_amount if wanted_type == "currency" else 0,
+                ),
+            )
+            offer_id = int(cursor.lastrowid)
+
+            for user_card_id in offered_user_card_ids:
+                connection.execute(
+                    "INSERT INTO trade_offer_cards (offer_id, user_card_id) VALUES (?, ?)",
+                    (offer_id, user_card_id),
+                )
+            for user_cosmetic_item_id in offered_user_cosmetic_ids:
+                connection.execute(
+                    "INSERT INTO trade_offer_cosmetics (offer_id, user_cosmetic_item_id) VALUES (?, ?)",
+                    (offer_id, user_cosmetic_item_id),
                 )
 
-        connection.commit()
+            if wanted_type == "cards" and wanted_asset_type == "cards":
+                for card_id in wanted_card_ids:
+                    connection.execute(
+                        """
+                        INSERT INTO trade_offer_wanted_cards (offer_id, card_id, quantity)
+                        VALUES (?, ?, 1)
+                        ON CONFLICT(offer_id, card_id) DO UPDATE SET quantity = quantity + 1
+                        """,
+                        (offer_id, card_id),
+                    )
+            elif wanted_type == "cards" and wanted_asset_type == "cosmetics":
+                for cosmetic_item_id in wanted_cosmetic_item_ids:
+                    connection.execute(
+                        """
+                        INSERT INTO trade_offer_wanted_cosmetics (offer_id, cosmetic_item_id, quantity)
+                        VALUES (?, ?, 1)
+                        ON CONFLICT(offer_id, cosmetic_item_id) DO UPDATE SET quantity = quantity + 1
+                        """,
+                        (offer_id, cosmetic_item_id),
+                    )
+
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
     if target_user_id is not None:
         return CommunityActionResult(
@@ -792,7 +1089,13 @@ async def create_trade_offer(
             creator_telegram_id=int(creator_row["telegram_id"]),
         )
 
-    return CommunityActionResult(True, "Обмен опубликован", "Предложение появилось на рынке обменов.", offer_id=offer_id, creator_telegram_id=int(creator_row["telegram_id"]))
+    return CommunityActionResult(
+        True,
+        "Обмен опубликован",
+        "Предложение появилось на рынке обменов.",
+        offer_id=offer_id,
+        creator_telegram_id=int(creator_row["telegram_id"]),
+    )
 
 
 def build_trade_mode_filter(mode: str, user_id: int | None = None) -> tuple[str, list[object]]:
@@ -809,8 +1112,7 @@ async def get_trade_offers_page(mode: str = "market", user_id: int | None = None
     where_sql, params = build_trade_mode_filter(mode, user_id)
     with get_connection() as connection:
         total_count = int(connection.execute(
-            f"SELECT COUNT(*) AS total_count FROM trade_offers {where_sql}",
-            params,
+            f"SELECT COUNT(*) AS total_count FROM trade_offers {where_sql}", params
         ).fetchone()["total_count"])
         pages_count = max(1, ceil(total_count / per_page))
         safe_page = min(max(page, 1), pages_count)
@@ -819,11 +1121,14 @@ async def get_trade_offers_page(mode: str = "market", user_id: int | None = None
             f"""
             SELECT trade_offers.id, trade_offers.creator_user_id, users.nickname AS creator_nickname,
                    trade_offers.target_user_id, target.nickname AS target_nickname,
-                   trade_offers.wanted_type, trade_offers.wanted_currency_code, currencies.icon AS wanted_currency_icon,
+                   trade_offers.wanted_type, COALESCE(trade_offers.wanted_asset_type, 'cards') AS wanted_asset_type,
+                   trade_offers.wanted_currency_code, currencies.icon AS wanted_currency_icon,
                    currencies.name AS wanted_currency_name, trade_offers.wanted_currency_amount, trade_offers.status,
                    trade_offers.created_at,
                    (SELECT COUNT(*) FROM trade_offer_cards WHERE offer_id = trade_offers.id) AS offered_count,
-                   (SELECT COALESCE(SUM(quantity), 0) FROM trade_offer_wanted_cards WHERE offer_id = trade_offers.id) AS wanted_cards_count
+                   (SELECT COUNT(*) FROM trade_offer_cosmetics WHERE offer_id = trade_offers.id) AS offered_cosmetics_count,
+                   (SELECT COALESCE(SUM(quantity), 0) FROM trade_offer_wanted_cards WHERE offer_id = trade_offers.id) AS wanted_cards_count,
+                   (SELECT COALESCE(SUM(quantity), 0) FROM trade_offer_wanted_cosmetics WHERE offer_id = trade_offers.id) AS wanted_cosmetics_count
             FROM trade_offers
             JOIN users ON users.id = trade_offers.creator_user_id
             LEFT JOIN users target ON target.id = trade_offers.target_user_id
@@ -838,27 +1143,17 @@ async def get_trade_offers_page(mode: str = "market", user_id: int | None = None
     return TradeOffersPage(
         offers=[
             TradeOfferListItem(
-                id=row["id"],
-                creator_user_id=row["creator_user_id"],
-                creator_nickname=row["creator_nickname"],
-                target_user_id=row["target_user_id"],
-                target_nickname=row["target_nickname"],
-                wanted_type=row["wanted_type"],
-                wanted_currency_code=row["wanted_currency_code"],
-                wanted_currency_icon=row["wanted_currency_icon"],
-                wanted_currency_name=row["wanted_currency_name"],
-                wanted_currency_amount=row["wanted_currency_amount"],
-                offered_count=row["offered_count"],
-                wanted_cards_count=row["wanted_cards_count"],
-                status=row["status"],
-                created_at=row["created_at"],
-            )
-            for row in rows
+                id=row["id"], creator_user_id=row["creator_user_id"], creator_nickname=row["creator_nickname"],
+                target_user_id=row["target_user_id"], target_nickname=row["target_nickname"],
+                wanted_type=row["wanted_type"], wanted_asset_type=row["wanted_asset_type"],
+                wanted_currency_code=row["wanted_currency_code"], wanted_currency_icon=row["wanted_currency_icon"],
+                wanted_currency_name=row["wanted_currency_name"], wanted_currency_amount=row["wanted_currency_amount"],
+                offered_count=row["offered_count"], offered_cosmetics_count=row["offered_cosmetics_count"],
+                wanted_cards_count=row["wanted_cards_count"], wanted_cosmetics_count=row["wanted_cosmetics_count"],
+                status=row["status"], created_at=row["created_at"],
+            ) for row in rows
         ],
-        page=safe_page,
-        pages_count=pages_count,
-        total_count=total_count,
-        mode=mode,
+        page=safe_page, pages_count=pages_count, total_count=total_count, mode=mode,
     )
 
 
@@ -869,17 +1164,17 @@ async def get_trade_offer_profile(offer_id: int) -> TradeOfferProfile | None:
             SELECT trade_offers.id, trade_offers.creator_user_id, creator.nickname AS creator_nickname,
                    trade_offers.target_user_id, target.nickname AS target_nickname,
                    trade_offers.accepted_by_user_id, accepter.nickname AS accepted_by_nickname,
-                   trade_offers.wanted_type, trade_offers.wanted_currency_code,
-                   currencies.icon AS wanted_currency_icon, currencies.name AS wanted_currency_name,
-                   trade_offers.wanted_currency_amount, trade_offers.status, trade_offers.created_at, trade_offers.accepted_at
+                   trade_offers.wanted_type, COALESCE(trade_offers.wanted_asset_type, 'cards') AS wanted_asset_type,
+                   trade_offers.wanted_currency_code, currencies.icon AS wanted_currency_icon,
+                   currencies.name AS wanted_currency_name, trade_offers.wanted_currency_amount,
+                   trade_offers.status, trade_offers.created_at, trade_offers.accepted_at
             FROM trade_offers
             JOIN users creator ON creator.id = trade_offers.creator_user_id
             LEFT JOIN users target ON target.id = trade_offers.target_user_id
             LEFT JOIN users accepter ON accepter.id = trade_offers.accepted_by_user_id
             LEFT JOIN currencies ON currencies.code = trade_offers.wanted_currency_code
             WHERE trade_offers.id = ?
-            """,
-            (offer_id,),
+            """, (offer_id,),
         ).fetchone()
         if row is None:
             return None
@@ -892,43 +1187,51 @@ async def get_trade_offer_profile(offer_id: int) -> TradeOfferProfile | None:
             JOIN user_cards ON user_cards.id = trade_offer_cards.user_card_id
             JOIN cards ON cards.id = user_cards.card_id
             JOIN collections ON collections.id = cards.collection_id
-            WHERE trade_offer_cards.offer_id = ?
-            ORDER BY cards.overall DESC
-            """,
-            (offer_id,),
+            WHERE trade_offer_cards.offer_id = ? ORDER BY cards.overall DESC
+            """, (offer_id,),
         ).fetchall()
-
+        offered_cosmetic_rows = connection.execute(
+            """
+            SELECT uci.id, uci.cosmetic_item_id, uci.type, uci.rarity, uci.equipped,
+                   wci.title, wci.badge_text, ucf.user_card_id AS bound_user_card_id
+            FROM trade_offer_cosmetics toc
+            JOIN user_cosmetic_items uci ON uci.id = toc.user_cosmetic_item_id
+            JOIN war2_cosmetic_items wci ON wci.id = uci.cosmetic_item_id
+            LEFT JOIN user_card_frames ucf ON ucf.user_cosmetic_item_id = uci.id
+            WHERE toc.offer_id = ? ORDER BY wci.type, wci.title, uci.id
+            """, (offer_id,),
+        ).fetchall()
         wanted_rows = connection.execute(
             """
             SELECT cards.id, cards.name, cards.position, cards.overall, cards.team,
-                   collections.name AS collection_name, cards.rarity, trade_offer_wanted_cards.quantity
-            FROM trade_offer_wanted_cards
-            JOIN cards ON cards.id = trade_offer_wanted_cards.card_id
+                   collections.name AS collection_name, cards.rarity, towc.quantity
+            FROM trade_offer_wanted_cards towc
+            JOIN cards ON cards.id = towc.card_id
             JOIN collections ON collections.id = cards.collection_id
-            WHERE trade_offer_wanted_cards.offer_id = ?
-            ORDER BY cards.overall DESC
-            """,
-            (offer_id,),
+            WHERE towc.offer_id = ? ORDER BY cards.overall DESC
+            """, (offer_id,),
+        ).fetchall()
+        wanted_cosmetic_rows = connection.execute(
+            """
+            SELECT wci.id, wci.type, wci.title, wci.rarity, wci.badge_text, towc.quantity
+            FROM trade_offer_wanted_cosmetics towc
+            JOIN war2_cosmetic_items wci ON wci.id = towc.cosmetic_item_id
+            WHERE towc.offer_id = ? ORDER BY wci.type, wci.title, wci.id
+            """, (offer_id,),
         ).fetchall()
 
     return TradeOfferProfile(
-        id=row["id"],
-        creator_user_id=row["creator_user_id"],
-        creator_nickname=row["creator_nickname"],
-        target_user_id=row["target_user_id"],
-        target_nickname=row["target_nickname"],
-        accepted_by_user_id=row["accepted_by_user_id"],
-        accepted_by_nickname=row["accepted_by_nickname"],
-        wanted_type=row["wanted_type"],
-        wanted_currency_code=row["wanted_currency_code"],
-        wanted_currency_icon=row["wanted_currency_icon"],
-        wanted_currency_name=row["wanted_currency_name"],
-        wanted_currency_amount=row["wanted_currency_amount"],
-        status=row["status"],
-        created_at=row["created_at"],
-        accepted_at=row["accepted_at"],
-        offered_cards=[trade_user_card_from_row(row) for row in offered_rows],
-        wanted_cards=[(trade_card_choice_from_row(row), int(row["quantity"])) for row in wanted_rows],
+        id=row["id"], creator_user_id=row["creator_user_id"], creator_nickname=row["creator_nickname"],
+        target_user_id=row["target_user_id"], target_nickname=row["target_nickname"],
+        accepted_by_user_id=row["accepted_by_user_id"], accepted_by_nickname=row["accepted_by_nickname"],
+        wanted_type=row["wanted_type"], wanted_asset_type=row["wanted_asset_type"],
+        wanted_currency_code=row["wanted_currency_code"], wanted_currency_icon=row["wanted_currency_icon"],
+        wanted_currency_name=row["wanted_currency_name"], wanted_currency_amount=row["wanted_currency_amount"],
+        status=row["status"], created_at=row["created_at"], accepted_at=row["accepted_at"],
+        offered_cards=[trade_user_card_from_row(item) for item in offered_rows],
+        offered_cosmetics=[trade_cosmetic_from_row(item) for item in offered_cosmetic_rows],
+        wanted_cards=[(trade_card_choice_from_row(item), int(item["quantity"])) for item in wanted_rows],
+        wanted_cosmetics=[(trade_cosmetic_choice_from_row(item), int(item["quantity"])) for item in wanted_cosmetic_rows],
     )
 
 
@@ -936,14 +1239,11 @@ async def accept_trade_offer(offer_id: int, accepter_user_id: int) -> CommunityA
     with get_connection() as connection:
         try:
             connection.execute("BEGIN IMMEDIATE")
-            offer = connection.execute(
-                "SELECT * FROM trade_offers WHERE id = ?",
-                (offer_id,),
-            ).fetchone()
+            offer = connection.execute("SELECT * FROM trade_offers WHERE id = ?", (offer_id,)).fetchone()
             if offer is None or offer["status"] != "open":
                 connection.rollback()
                 return CommunityActionResult(False, "Обмен недоступен", "Предложение уже закрыто.")
-            if offer["creator_user_id"] == accepter_user_id:
+            if int(offer["creator_user_id"]) == accepter_user_id:
                 connection.rollback()
                 return CommunityActionResult(False, "Обмен недоступен", "Свое предложение принять нельзя.")
             accepter_row = get_user_trade_info(connection, accepter_user_id)
@@ -955,41 +1255,44 @@ async def accept_trade_offer(offer_id: int, accepter_user_id: int) -> CommunityA
                 connection.rollback()
                 return CommunityActionResult(False, "Обмен недоступен", "Личное предложение адресовано другому игроку.")
 
-            offered_rows = connection.execute(
-                "SELECT user_card_id FROM trade_offer_cards WHERE offer_id = ?",
-                (offer_id,),
-            ).fetchall()
-            offered_ids = [int(row["user_card_id"]) for row in offered_rows]
-            placeholders = ",".join("?" for _ in offered_ids)
-            if not offered_ids:
+            offered_ids = [int(r["user_card_id"]) for r in connection.execute(
+                "SELECT user_card_id FROM trade_offer_cards WHERE offer_id = ?", (offer_id,)
+            ).fetchall()]
+            offered_cosmetic_ids = [int(r["user_cosmetic_item_id"]) for r in connection.execute(
+                "SELECT user_cosmetic_item_id FROM trade_offer_cosmetics WHERE offer_id = ?", (offer_id,)
+            ).fetchall()]
+            if not offered_ids and not offered_cosmetic_ids:
                 connection.rollback()
-                return CommunityActionResult(False, "Обмен недоступен", "В предложении нет карточек.")
-            valid_offered_count = int(connection.execute(
-                f"""
-                SELECT COUNT(*) AS total_count
-                FROM user_cards
-                WHERE id IN ({placeholders})
-                  AND user_id = ?
-                  AND is_in_lineup = 0
-                  AND trade_locked = 0
-                """,
-                [*offered_ids, offer["creator_user_id"]],
-            ).fetchone()["total_count"])
-            if valid_offered_count != len(offered_ids):
-                connection.rollback()
-                return CommunityActionResult(False, "Обмен недоступен", "Одна из карточек владельца уже недоступна.")
+                return CommunityActionResult(False, "Обмен недоступен", "В предложении нет активов.")
+
+            if offered_ids:
+                placeholders = ",".join("?" for _ in offered_ids)
+                valid_count = int(connection.execute(
+                    f"""SELECT COUNT(*) AS total_count FROM user_cards
+                        WHERE id IN ({placeholders}) AND user_id = ? AND is_in_lineup = 0 AND trade_locked = 0""",
+                    [*offered_ids, offer["creator_user_id"]],
+                ).fetchone()["total_count"])
+                if valid_count != len(offered_ids):
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен недоступен", "Одна из карточек владельца уже недоступна.")
+
+            if offered_cosmetic_ids:
+                placeholders = ",".join("?" for _ in offered_cosmetic_ids)
+                valid_count = int(connection.execute(
+                    f"""
+                    SELECT COUNT(*) AS total_count
+                    FROM user_cosmetic_items uci
+                    LEFT JOIN user_card_frames ucf ON ucf.user_cosmetic_item_id = uci.id
+                    WHERE uci.id IN ({placeholders}) AND uci.owner_id = ?
+                      AND uci.trade_locked = 0 AND uci.equipped = 0 AND ucf.id IS NULL
+                    """, [*offered_cosmetic_ids, offer["creator_user_id"]],
+                ).fetchone()["total_count"])
+                if valid_count != len(offered_cosmetic_ids):
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен недоступен", "Один из экземпляров косметики владельца уже используется или недоступен.")
 
             if offer["wanted_type"] == "currency":
-                balance_row = connection.execute(
-                    "SELECT amount FROM currency_balances WHERE user_id = ? AND currency_code = ?",
-                    (accepter_user_id, offer["wanted_currency_code"]),
-                ).fetchone()
-                balance = int(balance_row["amount"]) if balance_row else 0
                 amount = int(offer["wanted_currency_amount"])
-                if balance < amount:
-                    connection.rollback()
-                    return CommunityActionResult(False, "Не хватает валюты", "На балансе недостаточно средств для обмена.")
-
                 deduct_cursor = connection.execute(
                     "UPDATE currency_balances SET amount = amount - ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND currency_code = ? AND amount >= ?",
                     (amount, accepter_user_id, offer["wanted_currency_code"], amount),
@@ -998,66 +1301,94 @@ async def accept_trade_offer(offer_id: int, accepter_user_id: int) -> CommunityA
                     connection.rollback()
                     return CommunityActionResult(False, "Не хватает валюты", "На балансе недостаточно средств для обмена.")
                 connection.execute(
-                    """
-                    INSERT INTO currency_balances (user_id, currency_code, amount)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(user_id, currency_code) DO UPDATE SET
-                        amount = amount + excluded.amount,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
+                    """INSERT INTO currency_balances (user_id, currency_code, amount) VALUES (?, ?, ?)
+                       ON CONFLICT(user_id, currency_code) DO UPDATE SET amount = amount + excluded.amount, updated_at = CURRENT_TIMESTAMP""",
                     (offer["creator_user_id"], offer["wanted_currency_code"], amount),
                 )
+            elif (offer["wanted_asset_type"] or "cards") == "cosmetics":
+                wanted_cosmetic_rows = connection.execute(
+                    "SELECT cosmetic_item_id, quantity FROM trade_offer_wanted_cosmetics WHERE offer_id = ?", (offer_id,)
+                ).fetchall()
+                wanted_owned_ids: list[int] = []
+                for wanted in wanted_cosmetic_rows:
+                    owned_rows = connection.execute(
+                        """
+                        SELECT uci.id
+                        FROM user_cosmetic_items uci
+                        LEFT JOIN user_card_frames ucf ON ucf.user_cosmetic_item_id = uci.id
+                        WHERE uci.owner_id = ? AND uci.cosmetic_item_id = ?
+                          AND uci.trade_locked = 0 AND uci.equipped = 0 AND ucf.id IS NULL
+                          AND NOT EXISTS (
+                              SELECT 1 FROM trade_offer_cosmetics toc
+                              JOIN trade_offers t ON t.id = toc.offer_id
+                              WHERE toc.user_cosmetic_item_id = uci.id AND t.status = 'open'
+                          )
+                        ORDER BY uci.id ASC LIMIT ?
+                        """, (accepter_user_id, wanted["cosmetic_item_id"], wanted["quantity"]),
+                    ).fetchall()
+                    if len(owned_rows) < int(wanted["quantity"]):
+                        connection.rollback()
+                        return CommunityActionResult(False, "Не хватает косметики", "Нет свободного экземпляра нужной косметики. Экипированные и установленные на карты предметы не учитываются.")
+                    wanted_owned_ids.extend(int(item["id"]) for item in owned_rows)
+                for owned_id in wanted_owned_ids:
+                    connection.execute(
+                        "UPDATE user_cosmetic_items SET owner_id = ?, equipped = 0 WHERE id = ?",
+                        (offer["creator_user_id"], owned_id),
+                    )
             else:
                 wanted_rows = connection.execute(
-                    "SELECT card_id, quantity FROM trade_offer_wanted_cards WHERE offer_id = ?",
-                    (offer_id,),
+                    "SELECT card_id, quantity FROM trade_offer_wanted_cards WHERE offer_id = ?", (offer_id,)
                 ).fetchall()
                 wanted_user_card_ids: list[int] = []
                 for wanted in wanted_rows:
                     owned_rows = connection.execute(
                         """
-                        SELECT id
-                        FROM user_cards
-                        WHERE user_id = ?
-                          AND card_id = ?
-                          AND is_in_lineup = 0
-                          AND trade_locked = 0
-                        ORDER BY id ASC
-                        LIMIT ?
-                        """,
-                        (accepter_user_id, wanted["card_id"], wanted["quantity"]),
+                        SELECT uc.id FROM user_cards uc
+                        WHERE uc.user_id = ? AND uc.card_id = ? AND uc.is_in_lineup = 0 AND uc.trade_locked = 0
+                          AND NOT EXISTS (
+                              SELECT 1 FROM trade_offer_cards toc
+                              JOIN trade_offers t ON t.id = toc.offer_id
+                              WHERE toc.user_card_id = uc.id AND t.status = 'open'
+                          )
+                        ORDER BY uc.id ASC LIMIT ?
+                        """, (accepter_user_id, wanted["card_id"], wanted["quantity"]),
                     ).fetchall()
                     if len(owned_rows) < int(wanted["quantity"]):
                         connection.rollback()
-                        return CommunityActionResult(False, "Не хватает карточек", "В коллекции нет всех карточек для обмена.")
-                    wanted_user_card_ids.extend(int(row["id"]) for row in owned_rows)
-
+                        return CommunityActionResult(False, "Не хватает карточек", "В коллекции нет всех свободных карточек для обмена.")
+                    wanted_user_card_ids.extend(int(item["id"]) for item in owned_rows)
                 for user_card_id in wanted_user_card_ids:
                     connection.execute(
-                        "UPDATE user_cards SET user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        "UPDATE user_cards SET user_id = ?, is_in_lineup = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                         (offer["creator_user_id"], user_card_id),
                     )
 
             for user_card_id in offered_ids:
                 connection.execute(
-                    "UPDATE user_cards SET user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    "UPDATE user_cards SET user_id = ?, is_in_lineup = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (accepter_user_id, user_card_id),
                 )
+            for owned_id in offered_cosmetic_ids:
+                connection.execute(
+                    "UPDATE user_cosmetic_items SET owner_id = ?, equipped = 0 WHERE id = ?",
+                    (accepter_user_id, owned_id),
+                )
 
-            connection.execute(
-                """
-                UPDATE trade_offers
-                SET status = 'accepted', accepted_by_user_id = ?, accepted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
+            update_cursor = connection.execute(
+                """UPDATE trade_offers SET status = 'accepted', accepted_by_user_id = ?,
+                   accepted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'open'""",
                 (accepter_user_id, offer_id),
             )
+            if update_cursor.rowcount != 1:
+                connection.rollback()
+                return CommunityActionResult(False, "Обмен недоступен", "Предложение уже обработано.")
             connection.commit()
         except Exception:
             connection.rollback()
             raise
 
-    return CommunityActionResult(True, "Обмен завершён", "Карточки и награды уже в новых коллекциях.")
+    return CommunityActionResult(True, "Обмен завершён", "Карточки, косметика и валюта переданы новым владельцам.")
 
 
 async def decline_trade_offer(offer_id: int, user_id: int) -> CommunityActionResult:
@@ -1537,6 +1868,74 @@ async def delete_clan(clan_id: int) -> CommunityActionResult:
     return CommunityActionResult(True, "Клан расформирован", "Участники больше не состоят в этом клане.")
 
 
+async def get_war2_clan_player_contribution(clan_id: int, limit: int = 10):
+    """Contribution of current clan members in the active CLAN WAR 2.0 season."""
+    with get_connection() as connection:
+        return connection.execute(
+            """
+            WITH active_season AS (
+                SELECT id
+                FROM war2_seasons
+                WHERE status = 'active'
+                ORDER BY season_number DESC, id DESC
+                LIMIT 1
+            )
+            SELECT
+                u.id AS user_id,
+                u.nickname,
+                u.username,
+                COUNT(m.id) AS matches_played,
+                COALESCE(SUM(CASE WHEN m.result = 'win' THEN 1 ELSE 0 END), 0) AS wins_contributed,
+                COALESCE(SUM(CASE WHEN m.rating_delta > 0 THEN m.rating_delta ELSE 0 END), 0) AS rating_contributed
+            FROM clan_members cm
+            JOIN users u ON u.id = cm.user_id
+            LEFT JOIN active_season s ON 1 = 1
+            LEFT JOIN war2_matches m
+                ON m.season_id = s.id
+               AND m.user_id = cm.user_id
+               AND m.user_clan_id = cm.clan_id
+               AND m.status = 'completed'
+            WHERE cm.clan_id = ?
+            GROUP BY u.id, u.nickname, u.username
+            ORDER BY rating_contributed DESC, wins_contributed DESC, matches_played DESC, u.nickname COLLATE NOCASE ASC
+            LIMIT ?
+            """,
+            (clan_id, limit),
+        ).fetchall()
+
+
+async def get_war2_clan_rating(limit: int = 50):
+    """Clan leaderboard from the active CLAN WAR 2.0 season only."""
+    with get_connection() as connection:
+        return connection.execute(
+            """
+            WITH active_season AS (
+                SELECT id
+                FROM war2_seasons
+                WHERE status = 'active'
+                ORDER BY season_number DESC, id DESC
+                LIMIT 1
+            )
+            SELECT
+                c.id,
+                c.name,
+                COALESCE(s.rating_points, 0) AS rating_points,
+                COALESCE(s.wins_contributed, 0) AS wins_contributed,
+                COALESCE(s.matches_played, 0) AS matches_played
+            FROM clans c
+            LEFT JOIN active_season current ON 1 = 1
+            LEFT JOIN war2_clan_stats s
+                ON s.season_id = current.id
+               AND s.clan_id = c.id
+            WHERE c.active = 1
+            ORDER BY rating_points DESC, wins_contributed DESC, matches_played DESC, c.id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+# Arena-based clan wars from the current project are kept alongside CLAN WAR 2.0.
 async def get_clan_war_player_rating(clan_id: int, limit: int = 10):
     with get_connection() as connection:
         return connection.execute(
@@ -1548,7 +1947,8 @@ async def get_clan_war_player_rating(clan_id: int, limit: int = 10):
             WHERE cm.clan_id = ?
             ORDER BY wins_contributed DESC, u.nickname COLLATE NOCASE ASC
             LIMIT ?
-            """, (clan_id, limit)
+            """,
+            (clan_id, limit),
         ).fetchall()
 
 
@@ -1564,5 +1964,6 @@ async def get_clan_global_rating(limit: int = 50):
             GROUP BY c.id
             ORDER BY c.rating_points DESC, war_wins_contributed DESC, c.wins DESC, c.id ASC
             LIMIT ?
-            """, (limit,)
+            """,
+            (limit,),
         ).fetchall()

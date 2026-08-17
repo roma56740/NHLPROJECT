@@ -6,13 +6,30 @@ from app.services.admin_permissions import ADMIN_ROLE_ORDER, ADMIN_ROLES
 def build_admin_panel_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="👑 Админы", callback_data="admin_panel:admins")],
-            [InlineKeyboardButton(text="📦 База и картинки", callback_data="admin_panel:data")],
-            [InlineKeyboardButton(text="🏒 Дивизионы и анимация", callback_data="admin_divisions:main")],
-            [InlineKeyboardButton(text="💵 Зарплаты", callback_data="admin_salaries:main")],
+            [
+                InlineKeyboardButton(text="👑 Админы", callback_data="admin_panel:admins"),
+                InlineKeyboardButton(text="📦 База", callback_data="admin_panel:data"),
+            ],
+            [
+                InlineKeyboardButton(text="🏆 Ranked", callback_data="admin_ranked:main"),
+                InlineKeyboardButton(text="⚔️ Clan War", callback_data="admin_war2:main"),
+            ],
+            [InlineKeyboardButton(text="🏰 Stronghold", callback_data="admin_stronghold:main")],
+            [
+                InlineKeyboardButton(text="🎬 Видео паков", callback_data="admin_packs:videos:1"),
+                InlineKeyboardButton(text="🕐 Башни", callback_data="admin_stronghold:schedule"),
+            ],
+            [
+                InlineKeyboardButton(text="🛠 Техперерыв", callback_data="admin_maintenance:main"),
+                InlineKeyboardButton(text="🔒 Матчи", callback_data="admin_security:match_locks:1"),
+            ],
+            [
+                InlineKeyboardButton(text="🏒 Дивизионы", callback_data="admin_divisions:main"),
+                InlineKeyboardButton(text="💵 Зарплаты", callback_data="admin_salaries:main"),
+            ],
             [InlineKeyboardButton(text="🎁 Награды", callback_data="admin_rewards:main")],
-            [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_panel:main")],
-            [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu:main")],
+            [InlineKeyboardButton(text="🔄 Обновить сводку", callback_data="admin_panel:main")],
+            [InlineKeyboardButton(text="⬅️ В админ-центр", callback_data="menu:main")],
         ]
     )
 

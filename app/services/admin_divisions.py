@@ -60,6 +60,7 @@ class MissingAssetReport:
     missing_packs: list[str]
     missing_divisions: list[str]
     teams_without_division: list[str]
+    missing_pack_videos: list[str]
     missing_team_images: list[str]
     missing_country_images: list[str]
 
@@ -70,6 +71,7 @@ class MissingAssetReport:
             self.missing_packs,
             self.missing_divisions,
             self.teams_without_division,
+            self.missing_pack_videos,
             self.missing_team_images,
             self.missing_country_images,
         ))
@@ -357,7 +359,7 @@ async def build_missing_asset_report(limit: int = 20) -> MissingAssetReport:
             """
         ).fetchall()
         pack_rows = connection.execute(
-            "SELECT id, name, image_path FROM packs WHERE active = 1 ORDER BY id DESC"
+            "SELECT id, name, image_path, animation_video_path FROM packs WHERE active = 1 ORDER BY id DESC"
         ).fetchall()
         division_rows = connection.execute(
             "SELECT name, image_path FROM team_divisions WHERE active = 1 ORDER BY name"
@@ -370,17 +372,7 @@ async def build_missing_asset_report(limit: int = 20) -> MissingAssetReport:
             ORDER BY team_name COLLATE NOCASE ASC
             """
         ).fetchall()
-        country_rows = connection.execute(
-            """
-            SELECT DISTINCT TRIM(country) AS country_name
-            FROM cards
-            WHERE active = 1 AND TRIM(country) != ''
-            ORDER BY country_name COLLATE NOCASE ASC
-            """
-        ).fetchall()
         assigned = {str(row["team_name"]) for row in connection.execute("SELECT team_name FROM team_division_teams").fetchall()}
-        team_assets = {str(row["asset_key"]): str(row["image_path"] or "") for row in connection.execute("SELECT asset_key, image_path FROM animation_assets WHERE asset_type = 'team'").fetchall()}
-        country_assets = {str(row["asset_key"]): str(row["image_path"] or "") for row in connection.execute("SELECT asset_key, image_path FROM animation_assets WHERE asset_type = 'country'").fetchall()}
 
     missing_cards = []
     for row in card_rows:
@@ -395,18 +387,21 @@ async def build_missing_asset_report(limit: int = 20) -> MissingAssetReport:
             missing_cards.append(f"ID {row['id']} {row['name']} — нет: {', '.join(reasons)}")
 
     missing_packs = [f"ID {row['id']} {row['name']} — нет картинки" for row in pack_rows if not _image_exists(row["image_path"])]
+    missing_pack_videos = [
+        f"ID {row['id']} {row['name']} — нет видео открытия"
+        for row in pack_rows
+        if not _image_exists(row["animation_video_path"])
+    ]
     missing_divisions = [f"{row['name']} — нет картинки" for row in division_rows if not _image_exists(row["image_path"])]
     teams = [str(row["team_name"]) for row in team_rows]
-    countries = [str(row["country_name"]) for row in country_rows]
     teams_without_division = [team for team in teams if team not in assigned]
-    missing_team_images = [team for team in teams if not _image_exists(team_assets.get(team))]
-    missing_country_images = [country for country in countries if not _image_exists(country_assets.get(country))]
 
     return MissingAssetReport(
         missing_cards=missing_cards[:limit],
         missing_packs=missing_packs[:limit],
         missing_divisions=missing_divisions[:limit],
         teams_without_division=teams_without_division[:limit],
-        missing_team_images=missing_team_images[:limit],
-        missing_country_images=missing_country_images[:limit],
+        missing_pack_videos=missing_pack_videos[:limit],
+        missing_team_images=[],
+        missing_country_images=[],
     )

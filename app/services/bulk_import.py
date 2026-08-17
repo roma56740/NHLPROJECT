@@ -88,11 +88,11 @@ def parse_bulk_cards(text: str) -> list[ParsedCard]:
             if error is None:
                 try:
                     ovr = int(fields["overall"])
-                    if not (1 <= ovr <= 99):
+                    if not (1 <= ovr <= 110):
                         raise ValueError
                     fields["overall"] = ovr
                 except ValueError:
-                    error = f"OVR должен быть числом 1–99 (указано: {fields['overall']})"
+                    error = f"OVR должен быть числом 1–110 (указано: {fields['overall']})"
 
             if error is None:
                 rarity = RARITY_ALIASES.get(fields["rarity"].lower())

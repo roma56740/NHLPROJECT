@@ -1,11 +1,12 @@
 from asyncio import sleep
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message
 
 from app.keyboards.packs import (
     ADMIN_PACKS_PER_PAGE,
@@ -26,8 +27,7 @@ from app.keyboards.packs import (
     build_user_pack_profile_keyboard,
     build_user_packs_main_keyboard,
 )
-from app.services.admin_divisions import resolve_pack_animation_media
-from app.services.settings import get_int_setting
+
 from app.services.renders import render_card_profile_image
 from app.services.packs import (
     PackDraft,
@@ -35,6 +35,7 @@ from app.services.packs import (
     create_admin_pack,
     get_admin_pack_details,
     get_admin_packs_page,
+    get_pack_animation_meta,
     get_pack_history_page,
     get_pack_available_cards_page,
     get_pack_cards_page,
@@ -58,6 +59,8 @@ from app.texts.packs import (
     ADMIN_PACK_BAD_COUNT_TEXT,
     ADMIN_PACK_BAD_DESCRIPTION_TEXT,
     ADMIN_PACK_BAD_IMAGE_TEXT,
+    ADMIN_PACK_ANIMATION_TEXT,
+    ADMIN_PACK_BAD_ANIMATION_TEXT,
     ADMIN_PACK_BAD_NAME_TEXT,
     ADMIN_PACK_BAD_PRICE_TEXT,
     ADMIN_PACK_CANCEL_TEXT,
@@ -79,10 +82,7 @@ from app.texts.packs import (
     build_admin_packs_page_text,
     build_pack_draft_text,
     build_pack_history_text,
-    build_pack_animation_country_text,
-    build_pack_animation_division_text,
     build_pack_animation_reveal_text,
-    build_pack_animation_team_text,
     build_pack_opening_error_text,
     build_pack_opening_finish_text,
     build_pack_opening_result_text,
@@ -99,8 +99,46 @@ router = Router()
 
 PACKS_BUTTON_TEXT = "🎁 Паки"
 PACK_IMAGES_DIR = Path("assets/uploads/packs")
+PACK_ANIMATIONS_DIR = PACK_IMAGES_DIR / "animations"
+PACK_ANIMATION_SECONDS = 10
+PACK_MULTI_REWARD_REVEAL_SECONDS = 2
 ADMIN_PACK_SEARCH_CACHE: dict[int, str] = {}
 ADMIN_PACK_CARD_SEARCH_CACHE: dict[tuple[int, int], str] = {}
+
+
+async def _build_pack_videos_screen(page: int = 1) -> tuple[str, InlineKeyboardMarkup]:
+    packs_page = await get_admin_packs_page(page=page, per_page=ADMIN_PACKS_PER_PAGE)
+    lines = [
+        f"<b>🎬 Видео открытия паков</b> · {packs_page.page}/{packs_page.pages_count}",
+        "",
+        "Выбери пак. На его экране можно загрузить, посмотреть, выключить или удалить видео.",
+        "",
+    ]
+    keyboard: list[list[InlineKeyboardButton]] = []
+    for pack in packs_page.packs:
+        meta = await get_pack_animation_meta(pack.id)
+        if meta and meta.video_path:
+            status = "✅ включено" if meta.enabled else "⏸ выключено"
+        else:
+            status = "➕ не загружено"
+        lines.append(f"• {pack.name}: {status}")
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"🎬 {pack.name} · {status}",
+                callback_data=f"admin_packs:view:{pack.id}:{packs_page.page}",
+            )
+        ])
+
+    nav: list[InlineKeyboardButton] = []
+    if packs_page.page > 1:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"admin_packs:videos:{packs_page.page - 1}"))
+    if packs_page.page < packs_page.pages_count:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"admin_packs:videos:{packs_page.page + 1}"))
+    if nav:
+        keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton(text="➕ Создать пак", callback_data="admin_packs:add")])
+    keyboard.append([InlineKeyboardButton(text="⬅️ Ко всем пакам", callback_data="admin_packs:main")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 async def edit_or_send(callback: CallbackQuery, text: str, reply_markup=None) -> None:
@@ -254,12 +292,17 @@ async def show_admin_pack_profile(callback: CallbackQuery, pack_id: int, page: i
         await callback.answer("Пак не найден", show_alert=True)
         return
 
-    text = build_admin_pack_profile_text(pack)
+    from app.services.packs import get_pack_animation_meta
+
+    animation_meta = await get_pack_animation_meta(pack_id)
+    text = build_admin_pack_profile_text(pack, animation_meta=animation_meta)
     keyboard = build_admin_pack_profile_keyboard(
         pack_id=pack.id,
         page=page,
         active=pack.active,
         shop=pack.is_shop_available,
+        animation_enabled=animation_meta.enabled if animation_meta else True,
+        has_animation=bool(animation_meta and animation_meta.video_path),
     )
     message = callback.message
 
@@ -299,12 +342,17 @@ async def send_admin_pack_profile_after_input(message: Message, pack_id: int, pa
         await message.answer(ADMIN_PACKS_MAIN_TEXT, reply_markup=build_admin_packs_main_keyboard())
         return
 
-    text = build_admin_pack_profile_text(pack)
+    from app.services.packs import get_pack_animation_meta
+
+    animation_meta = await get_pack_animation_meta(pack_id)
+    text = build_admin_pack_profile_text(pack, animation_meta=animation_meta)
     keyboard = build_admin_pack_profile_keyboard(
         pack_id=pack.id,
         page=page,
         active=pack.active,
         shop=pack.is_shop_available,
+        animation_enabled=animation_meta.enabled if animation_meta else True,
+        has_animation=bool(animation_meta and animation_meta.video_path),
     )
     image_path = Path(pack.image_path) if pack.image_path else None
 
@@ -344,6 +392,75 @@ async def save_pack_image(message: Message) -> str | None:
         return file_path.as_posix()
 
     return None
+
+
+@dataclass(frozen=True)
+class SavedPackAnimation:
+    path: str
+    duration_seconds: int | None
+    file_size: int | None
+    file_id: str
+    file_unique_id: str
+
+
+async def save_pack_animation_video(message: Message) -> SavedPackAnimation | None:
+    """Persist an admin-uploaded pack-opening video in the Railway uploads volume,
+    AND keep Telegram's own file_id/file_unique_id (ТЗ: "Не сохраняй единственную
+    копию видео только во временную папку контейнера") — the local file is what
+    bot.send_video() reads today, file_id is a durable secondary reference."""
+    PACK_ANIMATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    now_value = datetime.now().strftime("%Y%m%d_%H%M%S")
+    user_id = message.from_user.id if message.from_user else 0
+
+    downloadable = None
+    unique_id = "video"
+    suffix = ".mp4"
+    duration: int | None = None
+    file_size: int | None = None
+
+    if message.video:
+        downloadable = message.video
+        unique_id = message.video.file_unique_id
+        duration = message.video.duration
+        file_size = message.video.file_size
+        original_suffix = Path(message.video.file_name or "opening.mp4").suffix.lower()
+        if original_suffix in {".mp4", ".mov", ".webm", ".m4v"}:
+            suffix = original_suffix
+    elif message.animation:
+        downloadable = message.animation
+        unique_id = message.animation.file_unique_id
+        duration = message.animation.duration
+        file_size = message.animation.file_size
+        original_suffix = Path(message.animation.file_name or "opening.mp4").suffix.lower()
+        if original_suffix in {".mp4", ".mov", ".webm", ".m4v"}:
+            suffix = original_suffix
+    elif message.document and message.document.mime_type and message.document.mime_type.startswith("video/"):
+        downloadable = message.document
+        unique_id = message.document.file_unique_id
+        file_size = message.document.file_size
+        original_suffix = Path(message.document.file_name or "opening.mp4").suffix.lower()
+        if original_suffix not in {".mp4", ".mov", ".webm", ".m4v"}:
+            return None
+        suffix = original_suffix
+
+    if downloadable is None:
+        return None
+
+    # Native Telegram video/animation includes duration metadata. Documents do not,
+    # so the admin prompt remains the source of truth for uploaded video files.
+    if duration is not None and duration > PACK_ANIMATION_SECONDS:
+        return None
+
+    file_name = f"opening_{now_value}_{user_id}_{unique_id}{suffix}"
+    file_path = PACK_ANIMATIONS_DIR / file_name
+    await message.bot.download(downloadable, destination=file_path)
+    return SavedPackAnimation(
+        path=file_path.as_posix(),
+        duration_seconds=duration,
+        file_size=file_size,
+        file_id=downloadable.file_id,
+        file_unique_id=unique_id,
+    )
 
 
 def validate_pack_name(value: str) -> bool:
@@ -395,104 +512,137 @@ async def prompt_from_callback(callback: CallbackQuery, state: FSMContext, text:
     await edit_or_send(callback, text, reply_markup=reply_markup)
 
 
-async def edit_animation_message(message: Message, text: str, image_path: str | None = None) -> Message:
-    media_path = Path(image_path) if image_path else None
-
-    if media_path and media_path.exists():
-        try:
-            await message.delete()
-        except Exception:
-            pass
-        return await message.bot.send_photo(
-            chat_id=message.chat.id,
-            photo=FSInputFile(media_path),
-            caption=text,
-        )
-
+async def _render_pack_reward_image(reward, *, telegram_user_id: int) -> Path | None:
     try:
-        if message.photo:
-            await message.delete()
-            return await message.bot.send_message(chat_id=message.chat.id, text=text)
-        await message.edit_text(text)
-        return message
-    except TelegramBadRequest:
+        rendered = render_card_profile_image(reward, user_id=telegram_user_id)
+        if rendered is not None and rendered.exists():
+            return rendered
+    except Exception:
+        pass
+
+    fallback = Path(reward.image_path) if reward.image_path else None
+    if fallback is not None and fallback.exists():
+        return fallback
+    return None
+
+
+async def _replace_opening_message_with_reward(
+    message: Message,
+    *,
+    result,
+    reward,
+    index: int,
+    total: int,
+    final: bool,
+    telegram_user_id: int,
+) -> Message:
+    image_path = await _render_pack_reward_image(reward, telegram_user_id=telegram_user_id)
+    caption = build_pack_animation_reveal_text(result, reward, index, total)
+    keyboard = build_pack_opening_result_keyboard() if final else None
+
+    if image_path is not None:
         try:
-            await message.delete()
-        except Exception:
+            edited = await message.edit_media(
+                media=InputMediaPhoto(media=FSInputFile(image_path), caption=caption, parse_mode="HTML"),
+                reply_markup=keyboard,
+            )
+            if isinstance(edited, Message):
+                return edited
+            return message
+        except TelegramBadRequest:
             pass
 
-        return await message.bot.send_message(chat_id=message.chat.id, text=text)
+    # Safe fallback for a missing/broken card image: keep the award visible and do
+    # not lose the already-committed pack result.
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    return await message.bot.send_message(
+        chat_id=message.chat.id,
+        text=caption,
+        reply_markup=keyboard,
+    )
 
 
 async def show_pack_opening_result(callback: CallbackQuery, result) -> None:
-    message = callback.message
+    """Show one admin-uploaded video, then replace that same message with rewards.
 
-    if not isinstance(message, Message):
+    The pack transaction (and the pack_pending_reveals row, see open_user_pack())
+    is already completed by open_user_pack() BEFORE this function ever runs — the
+    reward is fixed and cannot be duplicated by this visual layer. This function's
+    only job is to deliver that already-decided reward and mark the pending reveal
+    completed/failed; if the process restarts mid-flow, resume_pending_pack_reveals()
+    (called at boot) finishes any reveal still 'pending'.
+    """
+    from app.services.packs import attach_reveal_message, get_pack_animation_meta, mark_reveal_completed, mark_reveal_failed
+
+    source_message = callback.message
+    if not isinstance(source_message, Message):
         await callback.answer()
         return
 
     await safe_delete_callback_message(callback)
-
-    animation_message = await callback.bot.send_message(
-        chat_id=message.chat.id,
-        text=build_pack_opening_start_text(result),
+    animation_meta = await get_pack_animation_meta(result.pack_id)
+    video_path = (
+        Path(animation_meta.video_path)
+        if animation_meta and animation_meta.enabled and animation_meta.video_path
+        else None
     )
-    step_delay_ms = await get_int_setting("pack_animation_step_delay_ms", 900, minimum=200, maximum=5000)
-    step_delay = step_delay_ms / 1000
-    await sleep(min(step_delay, 1.2))
-
-    total_rewards = len(result.rewards)
-
-    for index, reward in enumerate(result.rewards, start=1):
-        media = await resolve_pack_animation_media(reward.team, reward.country)
-        division_name = media.get("division_name") or "Без дивизиона"
-
-        animation_message = await edit_animation_message(
-            animation_message,
-            build_pack_animation_division_text(result, reward, index, total_rewards, division_name=division_name),
-            media.get("division_image"),
-        )
-        await sleep(step_delay)
-
-        animation_message = await edit_animation_message(
-            animation_message,
-            build_pack_animation_team_text(result, reward, index, total_rewards, division_name=division_name),
-            media.get("team_image"),
-        )
-        await sleep(step_delay)
-
-        animation_message = await edit_animation_message(
-            animation_message,
-            build_pack_animation_country_text(result, reward, index, total_rewards, division_name=division_name),
-            media.get("country_image"),
-        )
-        await sleep(step_delay)
-
-        try:
-            reward_visual = render_card_profile_image(reward, user_id=callback.from_user.id)
-        except Exception:
-            reward_visual = None
-
-        animation_message = await edit_animation_message(
-            animation_message,
-            build_pack_animation_reveal_text(result, reward, index, total_rewards),
-            reward_visual.as_posix() if reward_visual is not None else reward.image_path,
-        )
-        await sleep(max(0.5, step_delay / 2))
-
-        await sleep(0.4)
 
     try:
-        await animation_message.delete()
-    except Exception:
-        pass
+        opening_message: Message
+        if video_path is not None and video_path.exists():
+            opening_message = await callback.bot.send_video(
+                chat_id=source_message.chat.id,
+                video=FSInputFile(video_path),
+                supports_streaming=True,
+            )
+            await attach_reveal_message(result.opening_id, chat_id=opening_message.chat.id, message_id=opening_message.message_id)
+            # Fixed UX contract: the opening phase lasts ten seconds before the same
+            # message becomes the revealed card (edit_message_media, not a new message).
+            await sleep(PACK_ANIMATION_SECONDS)
+        else:
+            opening_message = await callback.bot.send_message(
+                chat_id=source_message.chat.id,
+                text=build_pack_opening_start_text(result),
+            )
+            await attach_reveal_message(result.opening_id, chat_id=opening_message.chat.id, message_id=opening_message.message_id)
 
-    await callback.bot.send_message(chat_id=message.chat.id, text=build_pack_opening_result_text(result))
-    await callback.bot.send_message(
-        chat_id=message.chat.id,
-        text=build_pack_opening_finish_text(result),
-        reply_markup=build_pack_opening_result_keyboard(),
-    )
+        total_rewards = len(result.rewards)
+        if total_rewards == 0:
+            try:
+                await opening_message.edit_text(
+                    build_pack_opening_finish_text(result),
+                    reply_markup=build_pack_opening_result_keyboard(),
+                )
+            except TelegramBadRequest:
+                await opening_message.delete()
+                await callback.bot.send_message(
+                    chat_id=source_message.chat.id,
+                    text=build_pack_opening_finish_text(result),
+                    reply_markup=build_pack_opening_result_keyboard(),
+                )
+            await mark_reveal_completed(result.opening_id)
+            return
+
+        for index, reward in enumerate(result.rewards, start=1):
+            opening_message = await _replace_opening_message_with_reward(
+                opening_message,
+                result=result,
+                reward=reward,
+                index=index,
+                total=total_rewards,
+                final=index == total_rewards,
+                telegram_user_id=callback.from_user.id,
+            )
+            if index < total_rewards:
+                await sleep(PACK_MULTI_REWARD_REVEAL_SECONDS)
+
+        await mark_reveal_completed(result.opening_id)
+    except Exception as error:
+        await mark_reveal_failed(result.opening_id, repr(error))
+        raise
 
 
 async def show_admin_pack_cards_page(callback: CallbackQuery, pack_id: int, list_page: int, back_page: int) -> None:
@@ -547,6 +697,28 @@ async def show_admin_available_cards_page(
             search=cards_page.search,
         ),
     )
+
+
+@router.message(F.text == "🎬 Видео паков")
+async def admin_pack_videos_button(message: Message, state: FSMContext) -> None:
+    if message.from_user is None or not is_admin(message.from_user.id):
+        await message.answer("Раздел доступен только администрации.")
+        return
+    await state.clear()
+    await safe_delete_message(message)
+    text, keyboard = await _build_pack_videos_screen(1)
+    await message.answer(text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("admin_packs:videos:"))
+async def admin_pack_videos_page(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+    await state.clear()
+    page = int(callback.data.split(":")[-1]) if callback.data else 1
+    text, keyboard = await _build_pack_videos_screen(page)
+    await edit_or_send(callback, text, reply_markup=keyboard)
+    await callback.answer()
 
 
 @router.message(F.text == PACKS_BUTTON_TEXT)
@@ -959,6 +1131,140 @@ async def admin_pack_edit_image_value(message: Message, state: FSMContext) -> No
     await update_pack_image_path(pack_id, image_path)
     await send_admin_pack_profile_after_input(message, pack_id=pack_id, page=page, state=state)
     await state.clear()
+
+
+
+@router.callback_query(F.data.startswith("admin_packs:edit_animation:"))
+async def admin_pack_edit_animation(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+
+    parts = callback.data.split(":") if callback.data else []
+    pack_id = int(parts[2])
+    page = int(parts[3])
+    await state.clear()
+    await state.update_data(pack_id=pack_id, page=page)
+    await state.set_state(AdminPackStates.waiting_for_edit_animation)
+    await prompt_from_callback(
+        callback,
+        state,
+        ADMIN_PACK_ANIMATION_TEXT,
+        reply_markup=build_admin_pack_cancel_keyboard(pack_id=pack_id, page=page),
+    )
+    await callback.answer()
+
+
+@router.message(AdminPackStates.waiting_for_edit_animation)
+async def admin_pack_edit_animation_value(message: Message, state: FSMContext) -> None:
+    if message.from_user is None or not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    pack_id = int(data["pack_id"])
+    page = int(data.get("page", 1))
+    saved = await save_pack_animation_video(message)
+    await safe_delete_message(message)
+
+    if saved is None:
+        await send_pack_prompt(
+            message,
+            state,
+            ADMIN_PACK_BAD_ANIMATION_TEXT,
+            reply_markup=build_admin_pack_cancel_keyboard(pack_id=pack_id, page=page),
+        )
+        return
+
+    from app.services.audit_log import record_committed
+    from app.services.packs import update_pack_animation_video
+
+    await update_pack_animation_video(
+        pack_id,
+        video_path=saved.path,
+        duration_seconds=saved.duration_seconds,
+        file_size=saved.file_size,
+        file_id=saved.file_id,
+        file_unique_id=saved.file_unique_id,
+        uploaded_by=message.from_user.id,
+    )
+    record_committed(
+        message.from_user.id, "pack_animation_upload", entity_type="pack", entity_id=pack_id,
+        details={"duration_seconds": saved.duration_seconds, "file_size": saved.file_size},
+    )
+    await send_admin_pack_profile_after_input(message, pack_id=pack_id, page=page, state=state)
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("admin_packs:remove_animation:"))
+async def admin_pack_remove_animation(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+
+    from app.services.audit_log import record_committed
+    from app.services.packs import remove_pack_animation_video
+
+    parts = callback.data.split(":") if callback.data else []
+    pack_id = int(parts[2])
+    page = int(parts[3])
+    await remove_pack_animation_video(pack_id)
+    record_committed(callback.from_user.id, "pack_animation_remove", entity_type="pack", entity_id=pack_id)
+    await state.clear()
+    await show_admin_pack_profile(callback, pack_id=pack_id, page=page)
+    await callback.answer("Видео открытия удалено")
+
+
+@router.callback_query(F.data.startswith("admin_packs:toggle_animation:"))
+async def admin_pack_toggle_animation(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+
+    from app.services.audit_log import record_committed
+    from app.services.packs import get_pack_animation_meta, set_pack_animation_enabled
+
+    parts = callback.data.split(":") if callback.data else []
+    pack_id = int(parts[2])
+    page = int(parts[3])
+    meta = await get_pack_animation_meta(pack_id)
+    new_enabled = not (meta.enabled if meta else False)
+    await set_pack_animation_enabled(pack_id, new_enabled)
+    record_committed(
+        callback.from_user.id, "pack_animation_toggle", entity_type="pack", entity_id=pack_id,
+        details={"enabled": new_enabled},
+    )
+    await state.clear()
+    await show_admin_pack_profile(callback, pack_id=pack_id, page=page)
+    await callback.answer("Анимация включена" if new_enabled else "Анимация выключена")
+
+
+@router.callback_query(F.data.startswith("admin_packs:view_animation:"))
+async def admin_pack_view_animation(callback: CallbackQuery) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+
+    from app.services.packs import get_pack_animation_meta
+
+    parts = callback.data.split(":") if callback.data else []
+    pack_id = int(parts[2])
+    meta = await get_pack_animation_meta(pack_id)
+    if meta is None or not meta.video_path:
+        await callback.answer("Видео не загружено.", show_alert=True)
+        return
+
+    video_path = Path(meta.video_path)
+    if not video_path.exists():
+        await callback.answer("Файл видео не найден на диске.", show_alert=True)
+        return
+
+    await callback.bot.send_video(
+        chat_id=callback.message.chat.id,
+        video=FSInputFile(video_path),
+        caption=(
+            f"Длительность: {meta.duration_seconds or '—'} c\n"
+            f"Размер: {meta.file_size or '—'} байт\n"
+            f"Загружено: {meta.uploaded_at or '—'} (админ {meta.uploaded_by or '—'})\n"
+            f"Анимация включена: {'да' if meta.enabled else 'нет'}"
+        ),
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("admin_packs:edit_name:") | F.data.startswith("admin_packs:edit_description:"))

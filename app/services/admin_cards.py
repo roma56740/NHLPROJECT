@@ -116,7 +116,7 @@ def validate_overall(value: str) -> int | None:
 
     overall = int(clean_value)
 
-    if 1 <= overall <= 99:
+    if 1 <= overall <= 110:
         return overall
 
     return None

@@ -74,14 +74,42 @@ def build_trades_main_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def build_trade_cards_keyboard(cards, page: int, pages_count: int, selected_ids: list[int]) -> InlineKeyboardMarkup:
+def _sort_toggle(sort_order: str, callback_prefix: str) -> InlineKeyboardButton:
+    if sort_order == "ovr_asc":
+        return InlineKeyboardButton(text="↘️ Сильные → слабые", callback_data=f"{callback_prefix}:ovr_desc")
+    return InlineKeyboardButton(text="↗️ Слабые → сильные", callback_data=f"{callback_prefix}:ovr_asc")
+
+
+def build_trade_cards_keyboard(cards, page: int, pages_count: int, selected_ids: list[int], sort_order: str = "ovr_desc", has_any_selected: bool | None = None) -> InlineKeyboardMarkup:
     keyboard = []
     for card in cards:
         keyboard.append([InlineKeyboardButton(text=f"➕ {card.name} • {card.overall} OVR", callback_data=f"community:trade_add_offer_card:{card.id}:{page}")])
-    keyboard.append([InlineKeyboardButton(text="🔎 Поиск", callback_data="community:trade_search_offer_card")])
-    if selected_ids:
+    keyboard.append([_sort_toggle(sort_order, "community:trade_sort_offer")])
+    keyboard.append([
+        InlineKeyboardButton(text="🔎 Поиск карт", callback_data="community:trade_search_offer_card"),
+        InlineKeyboardButton(text="🎨 Выбрать косметику", callback_data="community:trade_offer_cosmetics:1"),
+    ])
+    if has_any_selected is None:
+        has_any_selected = bool(selected_ids)
+    if has_any_selected:
         keyboard.append([InlineKeyboardButton(text="✅ Готово", callback_data="community:trade_wanted")])
     keyboard.append(pagination_buttons("community:trade_offer_cards", page, pages_count))
+    keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="community:trades")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def build_trade_cosmetics_keyboard(items, page: int, pages_count: int, selected_ids: list[int], has_any_selected: bool) -> InlineKeyboardMarkup:
+    keyboard = []
+    for item in items:
+        suffix = f" · {item.badge_text}" if item.badge_text else ""
+        keyboard.append([InlineKeyboardButton(
+            text=f"➕ {item.title}{suffix} · #{item.id}",
+            callback_data=f"community:trade_add_offer_cosmetic:{item.id}:{page}",
+        )])
+    keyboard.append([InlineKeyboardButton(text="🎴 Выбрать карточки", callback_data="community:trade_offer_cards:1")])
+    if has_any_selected:
+        keyboard.append([InlineKeyboardButton(text="✅ Готово", callback_data="community:trade_wanted")])
+    keyboard.append(pagination_buttons("community:trade_offer_cosmetics", page, pages_count))
     keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="community:trades")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -90,6 +118,7 @@ def build_trade_wanted_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🎴 Хочу карточки", callback_data="community:trade_wanted_cards:1")],
+            [InlineKeyboardButton(text="🎨 Хочу косметику", callback_data="community:trade_wanted_cosmetics:1")],
             [InlineKeyboardButton(text="💰 Хочу валюту", callback_data="community:trade_wanted_currency")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="community:trades")],
         ]
@@ -104,14 +133,30 @@ def build_currency_choice_keyboard(currencies) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def build_wanted_cards_keyboard(cards, page: int, pages_count: int, selected_card_ids: list[int]) -> InlineKeyboardMarkup:
+def build_wanted_cards_keyboard(cards, page: int, pages_count: int, selected_card_ids: list[int], sort_order: str = "ovr_desc") -> InlineKeyboardMarkup:
     keyboard = []
     for card in cards:
         keyboard.append([InlineKeyboardButton(text=f"➕ {card.name} • {card.overall} OVR", callback_data=f"community:trade_add_wanted_card:{card.id}:{page}")])
+    keyboard.append([_sort_toggle(sort_order, "community:trade_sort_wanted")])
     keyboard.append([InlineKeyboardButton(text="🔎 Поиск", callback_data="community:trade_search_wanted_card")])
     if selected_card_ids:
         keyboard.append([InlineKeyboardButton(text="✅ Опубликовать", callback_data="community:trade_publish_cards")])
     keyboard.append(pagination_buttons("community:trade_wanted_cards", page, pages_count))
+    keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="community:trades")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def build_wanted_cosmetics_keyboard(items, page: int, pages_count: int, selected_item_ids: list[int]) -> InlineKeyboardMarkup:
+    keyboard = []
+    for item in items:
+        suffix = f" · {item.badge_text}" if item.badge_text else ""
+        keyboard.append([InlineKeyboardButton(
+            text=f"➕ {item.title}{suffix}",
+            callback_data=f"community:trade_add_wanted_cosmetic:{item.id}:{page}",
+        )])
+    if selected_item_ids:
+        keyboard.append([InlineKeyboardButton(text="✅ Опубликовать", callback_data="community:trade_publish_cosmetics")])
+    keyboard.append(pagination_buttons("community:trade_wanted_cosmetics", page, pages_count))
     keyboard.append([InlineKeyboardButton(text="❌ Отмена", callback_data="community:trades")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -161,6 +206,10 @@ def build_clans_main_keyboard(has_clan: bool) -> InlineKeyboardMarkup:
     keyboard.append([InlineKeyboardButton(text="🏆 Рейтинг кланов", callback_data="community:clan_global_rating")])
     if has_clan:
         keyboard.append([InlineKeyboardButton(text="🥇 Вклад игроков", callback_data="community:clan_player_rating")])
+    keyboard.append([InlineKeyboardButton(text="⚔️ CLAN WAR 2.0", callback_data="war2:main")])
+    keyboard.append([InlineKeyboardButton(text="🏆 Рейтинг CLAN WAR 2.0", callback_data="community:war2_clan_rating")])
+    if has_clan:
+        keyboard.append([InlineKeyboardButton(text="🥇 Вклад игроков CW 2.0", callback_data="community:war2_player_contribution")])
     keyboard.append([InlineKeyboardButton(text="📋 Все кланы", callback_data="community:clan_list:1")])
     keyboard.append([InlineKeyboardButton(text="🔎 Найти клан", callback_data="community:clan_search")])
     keyboard.append([InlineKeyboardButton(text="🤝 Сообщество", callback_data="community:main")])

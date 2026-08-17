@@ -36,7 +36,7 @@ ADMIN_CARDS_POSITION_TEXT = """
 ADMIN_CARDS_OVERALL_TEXT = """
 <b>⭐ Рейтинг карточки</b>
 
-Отправь OVR от <b>1</b> до <b>99</b>.
+Отправь OVR от <b>1</b> до <b>110</b>.
 
 Пример: <b>95</b>
 """.strip()
@@ -125,7 +125,7 @@ ADMIN_CARDS_BAD_TEXT_TEXT = """
 ADMIN_CARDS_BAD_OVERALL_TEXT = """
 <b>⭐ OVR не подходит</b>
 
-Отправь число от 1 до 99.
+Отправь число от 1 до 110.
 """.strip()
 
 

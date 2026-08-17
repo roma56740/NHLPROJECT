@@ -3,6 +3,7 @@ from math import ceil
 
 from app.database.db import get_connection
 from app.services.admin_cards import clean_search_query
+from app.services.card_sorting import get_user_card_sort_order, order_by_overall
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class PlayerCardsPage:
     search: str | None
     position: str | None
     rarity: str | None
+    sort_order: str = "ovr_desc"
 
 
 @dataclass(frozen=True)
@@ -209,6 +211,8 @@ async def get_player_cards_page(
     clean_rarity = normalize_rarity(rarity)
     where_sql, filter_params = build_player_cards_filter(clean_search, clean_position, clean_rarity)
     params = [user_id, *filter_params]
+    sort_order = await get_user_card_sort_order(user_id)
+    order_sql = order_by_overall(sort_order, card_alias="cards")
 
     with get_connection() as connection:
         count_cursor = connection.execute(
@@ -245,7 +249,7 @@ async def get_player_cards_page(
             JOIN cards ON cards.id = user_cards.card_id
             JOIN collections ON collections.id = cards.collection_id
             {where_sql}
-            ORDER BY user_cards.id DESC
+            ORDER BY {order_sql}, user_cards.id DESC
             LIMIT ? OFFSET ?
             """,
             [*params, per_page, offset],
@@ -278,6 +282,7 @@ async def get_player_cards_page(
         search=clean_search,
         position=clean_position,
         rarity=clean_rarity,
+        sort_order=sort_order,
     )
 
 

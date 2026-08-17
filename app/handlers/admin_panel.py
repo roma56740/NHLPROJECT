@@ -395,7 +395,7 @@ async def set_admin_role_callback(callback: CallbackQuery, state: FSMContext) ->
         await callback.answer("Нельзя изменить этого админа", show_alert=True)
         return
 
-    updated = await update_admin_role(telegram_id, role)
+    updated = await update_admin_role(telegram_id, role, actor_user_id=callback.from_user.id)
     admins = await list_active_admins()
     message = callback.message
     text = (
@@ -429,7 +429,7 @@ async def remove_admin_message(message: Message, state: FSMContext) -> None:
     if is_main_admin(telegram_id):
         result_text = ADMIN_REMOVE_MAIN_DENIED_TEXT
     else:
-        removed = await remove_admin(telegram_id)
+        removed = await remove_admin(telegram_id, actor_user_id=message.from_user.id)
         result_text = ADMIN_REMOVE_SUCCESS_TEXT if removed else ADMIN_REMOVE_NOT_FOUND_TEXT
 
     admins = await list_active_admins()

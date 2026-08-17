@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -23,6 +24,8 @@ from app.services.quick_sell import quick_sell_price
 from app.services.rewards import grant_currency, grant_pack
 from app.services.settings import get_bool_setting, get_int_setting, get_setting, set_setting_value
 
+
+logger = logging.getLogger(__name__)
 
 CURRENCY_VALUE_IN_COINS = {
     "coins": 1,
@@ -133,6 +136,8 @@ class WeeklyPayoutResult:
     total_coins: int
     total_packs: int
     telegram_ids: list[int]
+    payout_key: str = ""
+    skipped_already_paid: int = 0
 
 
 def format_int(value: int) -> str:
@@ -949,14 +954,27 @@ async def get_creator_detail(user_id: int) -> dict | None:
     return next((c for c in creators if int(c["id"]) == int(user_id)), None)
 
 
-async def pay_weekly_rewards() -> WeeklyPayoutResult:
-    """Начисляет недельные награды в банк выдачи всем активным креаторам уровня 1–5."""
+async def pay_weekly_rewards(payout_key: str | None = None) -> WeeklyPayoutResult:
+    """Add one weekly reward set to every active creator bank.
+
+    ``payout_key`` makes automatic runs idempotent. Re-running the same weekly
+    period (another Railway instance, restart, repeated scheduler tick) does not
+    add rewards twice. Manual admin payouts may omit the key and intentionally
+    create a one-off manual payout.
+    """
+    now = datetime.now(timezone.utc)
+    normalized_key = (payout_key or f"manual:{now.isoformat(timespec='microseconds')}").strip()
+    if not normalized_key:
+        normalized_key = f"manual:{now.isoformat(timespec='microseconds')}"
+
     with get_connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         creators = connection.execute(
             "SELECT id, telegram_id, creator_level FROM users WHERE is_creator = 1 AND creator_level BETWEEN 1 AND 5"
         ).fetchall()
 
+        paid_creators = 0
+        skipped_already_paid = 0
         total_coins = 0
         total_packs = 0
         telegram_ids: list[int] = []
@@ -964,6 +982,20 @@ async def pay_weekly_rewards() -> WeeklyPayoutResult:
         for creator in creators:
             user_id = int(creator["id"])
             level = int(creator["creator_level"])
+
+            already_paid = connection.execute(
+                """
+                SELECT 1
+                FROM creator_bonus_claims
+                WHERE user_id = ? AND bonus_type = 'weekly' AND period_key = ?
+                LIMIT 1
+                """,
+                (user_id, normalized_key),
+            ).fetchone()
+            if already_paid is not None:
+                skipped_already_paid += 1
+                continue
+
             cfg = _get_level_config(connection, level)
             if cfg is None:
                 continue
@@ -977,46 +1009,104 @@ async def pay_weekly_rewards() -> WeeklyPayoutResult:
             total_packs += _grant_creator_bank_pack(connection, user_id, elite_pack_id, cfg.weekly_elite_packs)
             total_packs += _grant_creator_bank_pack(connection, user_id, legendary_pack_id, cfg.weekly_legendary_packs)
 
+            # Claim is written in the SAME transaction as the bank changes.
+            # BEGIN IMMEDIATE serializes competing payout attempts; the unique
+            # period index is the final guard against any duplicate run.
             connection.execute(
-                "INSERT INTO creator_bonus_claims (user_id, bonus_type, level) VALUES (?, 'weekly', ?)",
-                (user_id, level),
+                "INSERT INTO creator_bonus_claims (user_id, bonus_type, level, period_key) VALUES (?, 'weekly', ?, ?)",
+                (user_id, level, normalized_key),
             )
+            paid_creators += 1
             telegram_ids.append(int(creator["telegram_id"]))
 
         connection.commit()
-    return WeeklyPayoutResult(len(creators), total_coins, total_packs, telegram_ids)
+
+    return WeeklyPayoutResult(
+        creators_count=paid_creators,
+        total_coins=total_coins,
+        total_packs=total_packs,
+        telegram_ids=telegram_ids,
+        payout_key=normalized_key,
+        skipped_already_paid=skipped_already_paid,
+    )
+
+
+def _parse_creator_payout_datetime(raw: str) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _automatic_creator_payout_key(due_at: datetime, interval_hours: int) -> str:
+    due_utc = due_at.astimezone(timezone.utc).replace(microsecond=0)
+    return f"auto:{interval_hours}h:{due_utc.isoformat()}"
+
+
+async def run_creator_weekly_payout_if_due(bot, *, now: datetime | None = None) -> WeeklyPayoutResult | None:
+    """Run a single scheduler tick and return a payout only when it is due."""
+    enabled = await get_bool_setting("creator_weekly_rewards_enabled", True)
+    if not enabled:
+        return None
+
+    interval_hours = await get_int_setting("creator_weekly_rewards_interval_hours", 168, minimum=24)
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    last_raw = await get_setting("creator_weekly_last_paid_at", "")
+    last_dt = _parse_creator_payout_datetime(last_raw)
+
+    if last_dt is None:
+        # Preserve existing behavior: on the first deployment with no payout
+        # history, creators get their current weekly bank reward immediately.
+        due_at = current
+    else:
+        due_at = last_dt + timedelta(hours=interval_hours)
+        if current < due_at:
+            return None
+
+    payout_key = _automatic_creator_payout_key(due_at, interval_hours)
+    result = await pay_weekly_rewards(payout_key=payout_key)
+
+    # Even if another instance already processed this exact key, advance the
+    # scheduler cursor so this instance does not retry the same week every hour.
+    await set_setting_value("creator_weekly_last_paid_at", current.isoformat())
+
+    for telegram_id in result.telegram_ids:
+        try:
+            await bot.send_message(
+                chat_id=telegram_id,
+                text=(
+                    "🎁 <b>Еженедельная выплата креатора</b>\n\n"
+                    "Награды автоматически добавлены в твой банк креатора."
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to notify creator %s about weekly payout", telegram_id)
+
+    logger.info(
+        "creator weekly payout key=%s paid=%s skipped=%s coins=%s packs=%s",
+        result.payout_key,
+        result.creators_count,
+        result.skipped_already_paid,
+        result.total_coins,
+        result.total_packs,
+    )
+    return result
 
 
 async def creator_weekly_rewards_loop(bot) -> None:
+    """Hourly watcher; actual creator bank payout is due every 168h by default."""
     while True:
         try:
-            enabled = await get_bool_setting("creator_weekly_rewards_enabled", True)
-            interval_hours = await get_int_setting("creator_weekly_rewards_interval_hours", 168, minimum=24)
-            last_raw = await get_setting("creator_weekly_last_paid_at", "")
-            now = datetime.now(timezone.utc)
-            should_pay = enabled
-            if last_raw:
-                try:
-                    last_dt = datetime.fromisoformat(last_raw)
-                    if last_dt.tzinfo is None:
-                        last_dt = last_dt.replace(tzinfo=timezone.utc)
-                    should_pay = should_pay and now - last_dt >= timedelta(hours=interval_hours)
-                except ValueError:
-                    should_pay = True
-
-            if should_pay:
-                result = await pay_weekly_rewards()
-                await set_setting_value("creator_weekly_last_paid_at", now.isoformat())
-                for telegram_id in result.telegram_ids:
-                    try:
-                        await bot.send_message(
-                            chat_id=telegram_id,
-                            text="🎁 Недельные бонусы креатора добавлены в твой банк выдачи.",
-                        )
-                    except Exception:
-                        pass
+            await run_creator_weekly_payout_if_due(bot)
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            pass
+            logger.exception("creator_weekly_rewards_loop tick failed")
 
         await asyncio.sleep(3600)
 

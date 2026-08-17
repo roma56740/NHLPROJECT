@@ -32,6 +32,7 @@ def build_lineup_main_keyboard(overview: LineupOverview) -> InlineKeyboardMarkup
             ]
         )
 
+    keyboard.append([InlineKeyboardButton(text="🖼 Рамки игроков", callback_data="cosmetics:frames")])
     keyboard.append([InlineKeyboardButton(text="🧹 Очистить состав", callback_data="lineup:clear_confirm")])
     keyboard.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu:main")])
 
@@ -68,6 +69,13 @@ def build_lineup_slot_cards_keyboard(page: LineupCardsPage, current_filled: bool
 
     if navigation:
         keyboard.append(navigation)
+
+    sort_text = "⬆️ Слабые → сильные" if page.sort_order == "ovr_asc" else "⬇️ Сильные → слабые"
+    next_sort = "ovr_desc" if page.sort_order == "ovr_asc" else "ovr_asc"
+    keyboard.append([InlineKeyboardButton(
+        text=sort_text,
+        callback_data=f"lineup:sort:{page.slot_code}:{next_sort}",
+    )])
 
     if current_filled:
         keyboard.append([InlineKeyboardButton(text="❌ Освободить слот", callback_data=f"lineup:remove:{page.slot_code}")])

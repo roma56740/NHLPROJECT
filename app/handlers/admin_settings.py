@@ -4,12 +4,12 @@ from aiogram.types import CallbackQuery, Message
 
 from app.keyboards.admin_settings import build_admin_settings_cancel_keyboard, build_admin_settings_keyboard
 from app.services.security import add_security_log
+from app.services import maintenance
 from app.services.settings import (
     get_all_settings,
     get_bool_setting,
     get_setting,
     set_setting_value,
-    toggle_maintenance_mode,
 )
 from app.states.admin_settings import AdminSettingsStates
 from app.texts.admin_settings import (
@@ -39,6 +39,7 @@ NUMBER_SETTINGS = {
     "creator_weekly_rewards_interval_hours",
     "asset_warning_interval_hours",
     "pack_animation_step_delay_ms",
+    "ranked_shootout_chance_percent",
     "creator_weekly_rewards_enabled",
     "asset_warning_enabled",
     "subscription_required_enabled",
@@ -110,7 +111,17 @@ async def admin_settings_toggle_maintenance(callback: CallbackQuery) -> None:
     if not await answer_callback_admin_only(callback):
         return
 
-    is_enabled = await toggle_maintenance_mode()
+    # Быстрый тумблер здесь переиспользует ПОЛНУЮ реализацию из app.services.maintenance
+    # (та же, что у раздела "🛠 Технический перерыв" в админ-панели) — единая точка
+    # правды для enabled_at/enabled_by/аудит-лога/инвалидации кэша, а не отдельная
+    # параллельная запись в тот же game_settings.maintenance_mode ключ.
+    status = await maintenance.get_status(use_cache=False)
+    if status.enabled:
+        await maintenance.disable(callback.from_user.id)
+        is_enabled = False
+    else:
+        await maintenance.enable(callback.from_user.id)
+        is_enabled = True
     await add_security_log(
         action="Настройка игры",
         details=f"Режим обслуживания {'включён' if is_enabled else 'выключен'} администратором {callback.from_user.id}",
@@ -172,6 +183,14 @@ async def admin_settings_save_value(message: Message, state: FSMContext) -> None
                 reply_markup=build_admin_settings_cancel_keyboard(),
             )
             return
+
+    if key == "ranked_shootout_chance_percent" and int(value) > 100:
+        await message.bot.send_message(
+            chat_id=chat_id,
+            text="Шанс буллитов должен быть от 0 до 100%.",
+            reply_markup=build_admin_settings_cancel_keyboard(),
+        )
+        return
 
     if key == "matchmaking_min_wait_seconds":
         max_wait = int(await get_setting("matchmaking_max_wait_seconds", "110") or 110)

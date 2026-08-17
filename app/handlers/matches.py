@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from app.keyboards.matches import (
+    build_active_match_blocked_keyboard,
     build_match_captcha_keyboard,
     MATCH_HISTORY_PER_PAGE,
     build_match_details_keyboard,
@@ -31,6 +32,7 @@ from app.services.matches import (
     get_match_main_info,
 )
 from app.services.community import get_user_id_by_telegram_id
+from app.services import match_guard
 from app.services.match_guard import (
     CAPTCHA_TTL_SECONDS,
     generate_captcha,
@@ -124,32 +126,68 @@ async def edit_stored_message(bot, chat_id: int, message_id: int, text: str, rep
         await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
 
 
+async def _equipped_war2_cosmetics(user_id: int) -> tuple[str | None, str | None]:
+    """CLAN WAR 2.0 фон/рамка для обычного превью состава — best-effort, никогда не
+    бросает (отсутствие war2_cosmetics записей — штатный случай для всех игроков,
+    которые ни разу не касались CLAN WAR 2.0)."""
+    try:
+        from app.services import war2_cosmetics
+
+        return (
+            await war2_cosmetics.get_equipped_background_path(user_id),
+            await war2_cosmetics.get_equipped_frame_path(user_id),
+        )
+    except Exception:
+        return None, None
+
+
+async def _cosmetic_display_name(user_id: int, fallback: str) -> str:
+    try:
+        from app.services import war2_cosmetics
+        from app.database.db import get_connection
+        with get_connection() as connection:
+            row = connection.execute("SELECT nickname FROM users WHERE id = ?", (user_id,)).fetchone()
+        nickname = row["nickname"] if row else fallback
+        return await war2_cosmetics.get_display_nickname(user_id, nickname)
+    except Exception:
+        return fallback
+
+
 async def send_match_lineup_previews(*, bot, chat_id: int, result: MatchPlayResult) -> None:
     """Перед матчем отправляет две картинки: сначала состав игрока, потом состав соперника."""
     try:
         if result.user_id is not None:
             own_overview = await get_lineup_overview(result.user_id)
-            own_image = render_lineup_image(own_overview, result.user_id, title="ТВОЙ СОСТАВ")
+            own_background, own_frame = await _equipped_war2_cosmetics(result.user_id)
+            own_name = await _cosmetic_display_name(result.user_id, "Ты")
+            own_image = render_lineup_image(
+                own_overview, result.user_id, title=f"ТВОЙ СОСТАВ: {own_name}",
+                background_override_path=own_background, frame_override_path=own_frame,
+            )
             await bot.send_photo(
                 chat_id=chat_id,
                 photo=FSInputFile(own_image),
-                caption=f"<b>Твой состав</b>\nOVR: <b>{own_overview.average_overall or '—'}</b> (+{own_overview.chemistry_bonus})",
+                caption=f"<b>Твой состав</b>\n{own_name}\nOVR: <b>{own_overview.average_overall or '—'}</b> (+{own_overview.chemistry_bonus})",
             )
             await asyncio.sleep(0.7)
 
         if result.opponent_user_id is not None:
             opponent_overview = await get_lineup_overview(result.opponent_user_id)
+            opponent_background, opponent_frame = await _equipped_war2_cosmetics(result.opponent_user_id)
+            opponent_name = await _cosmetic_display_name(result.opponent_user_id, result.opponent_name)
             opponent_image = render_lineup_image(
                 opponent_overview,
                 result.opponent_user_id,
-                title=f"СОСТАВ СОПЕРНИКА: {result.opponent_name}",
+                title=f"СОСТАВ СОПЕРНИКА: {opponent_name}",
+                background_override_path=opponent_background,
+                frame_override_path=opponent_frame,
             )
             await bot.send_photo(
                 chat_id=chat_id,
                 photo=FSInputFile(opponent_image),
                 caption=(
                     f"<b>Состав соперника</b>\n"
-                    f"{result.opponent_name}\n"
+                    f"{opponent_name}\n"
                     f"OVR: <b>{opponent_overview.average_overall or '—'}</b> (+{opponent_overview.chemistry_bonus})"
                 ),
             )
@@ -562,10 +600,29 @@ async def matches_play(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
 
+    # ЕДИНЫЙ ГЛОБАЛЬНЫЙ MATCH LOCK: user_id ВСЕГДА берётся из реального инициатора
+    # Update (callback.from_user.id -> внутренний profile.id), а не из чего-либо,
+    # что теоретически могло бы прийти в callback_data — так это же самое место
+    # правильно блокирует не только повторный обычный матч, но и попытку начать
+    # обычный матч, пока уже идёт Ranked/Stronghold/Clan War 2.0 (та же таблица
+    # player_match_locks — единая для всех режимов).
     user_id = get_user_id_by_telegram_id(callback.from_user.id)
-    if user_id is not None and await has_active_match(user_id):
-        await callback.answer("У вас уже идёт матч. Дождитесь его окончания.", show_alert=True)
-        return
+    if user_id is not None:
+        active_lock = await match_guard.get_active_match(user_id)
+        if active_lock is not None:
+            text = await match_guard.describe_active_match(active_lock)
+            keyboard = build_active_match_blocked_keyboard(
+                return_callback="matches:main",
+                cancellable=match_guard.is_match_type_cancellable(active_lock.match_type),
+                cancel_callback=None,
+            )
+            await callback.answer()
+            if isinstance(message, Message):
+                try:
+                    await message.edit_text(text, reply_markup=keyboard)
+                except TelegramBadRequest:
+                    await callback.bot.send_message(chat_id=message.chat.id, text=text, reply_markup=keyboard)
+            return
 
     # #3: капча перед матчем (защита от автокликера).
     captcha = generate_captcha()

@@ -21,6 +21,21 @@ def build_matches_main_keyboard(is_ready: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+def build_active_match_blocked_keyboard(*, return_callback: str, cancellable: bool = False, cancel_callback: str | None = None) -> InlineKeyboardMarkup:
+    """ЕДИНЫЙ ГЛОБАЛЬНЫЙ MATCH LOCK: экран "у вас уже есть активный матч" —
+    кнопка возврата к активному матчу + обновление статуса; кнопка отмены
+    показывается, только если правила режима её разрешают (см.
+    app.services.match_guard.is_match_type_cancellable)."""
+    keyboard: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="↩️ Вернуться к активному матчу", callback_data=return_callback)],
+        [InlineKeyboardButton(text="🔄 Обновить статус", callback_data="matches:play")],
+    ]
+    if cancellable and cancel_callback:
+        keyboard.append([InlineKeyboardButton(text="❌ Отменить матч", callback_data=cancel_callback)])
+    keyboard.append([InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
 def build_match_search_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

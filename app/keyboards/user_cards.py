@@ -51,6 +51,7 @@ def build_user_cards_list_keyboard(
     search: str | None = None,
     position: str | None = None,
     rarity: str | None = None,
+    sort_order: str = "ovr_desc",
 ) -> InlineKeyboardMarkup:
     keyboard: list[list[InlineKeyboardButton]] = []
 
@@ -83,12 +84,15 @@ def build_user_cards_list_keyboard(
         InlineKeyboardButton(text="🖼 Рендер", callback_data="user_cards:render"),
         InlineKeyboardButton(text="🔎 Поиск", callback_data="user_cards:search"),
     ])
+    sort_text = "⬆️ Слабые → сильные" if sort_order == "ovr_asc" else "⬇️ Сильные → слабые"
+    next_sort = "ovr_desc" if sort_order == "ovr_asc" else "ovr_asc"
+    keyboard.append([InlineKeyboardButton(text=sort_text, callback_data=f"user_cards:sort:{next_sort}")])
     keyboard.append([InlineKeyboardButton(text="🎛 Фильтры", callback_data="user_cards:filters")])
 
     if search or position or rarity:
         keyboard.append([InlineKeyboardButton(text="🧹 Сбросить", callback_data="user_cards:clear_filters")])
 
-    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="user_cards:main")])
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 

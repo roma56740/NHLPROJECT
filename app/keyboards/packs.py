@@ -156,15 +156,27 @@ def build_admin_packs_list_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def build_admin_pack_profile_keyboard(pack_id: int, page: int, active: bool, shop: bool) -> InlineKeyboardMarkup:
+def build_admin_pack_profile_keyboard(
+    pack_id: int, page: int, active: bool, shop: bool, animation_enabled: bool = True, has_animation: bool = False
+) -> InlineKeyboardMarkup:
     active_text = "⏸ Выключить" if active else "▶️ Включить"
     shop_text = "🎯 Убрать из магазина" if shop else "🛒 Добавить в магазин"
+    animation_toggle_text = "🚫 Выключить анимацию" if animation_enabled else "✅ Включить анимацию"
+
+    animation_rows = [
+        [InlineKeyboardButton(text="🎬 Загрузить/заменить видео (макс. 10 сек)", callback_data=f"admin_packs:edit_animation:{pack_id}:{page}")],
+    ]
+    if has_animation:
+        animation_rows.append([InlineKeyboardButton(text="▶️ Посмотреть видео", callback_data=f"admin_packs:view_animation:{pack_id}:{page}")])
+        animation_rows.append([InlineKeyboardButton(text=animation_toggle_text, callback_data=f"admin_packs:toggle_animation:{pack_id}:{page}")])
+        animation_rows.append([InlineKeyboardButton(text="🗑 Удалить видео открытия", callback_data=f"admin_packs:remove_animation:{pack_id}:{page}")])
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✏️ Название", callback_data=f"admin_packs:edit_name:{pack_id}:{page}")],
             [InlineKeyboardButton(text="📝 Описание", callback_data=f"admin_packs:edit_description:{pack_id}:{page}")],
             [InlineKeyboardButton(text="🖼 Фото пака", callback_data=f"admin_packs:edit_image:{pack_id}:{page}")],
+            *animation_rows,
             [InlineKeyboardButton(text="💰 Цена", callback_data=f"admin_packs:edit_price:{pack_id}:{page}")],
             [InlineKeyboardButton(text="🃏 Карт внутри", callback_data=f"admin_packs:edit_count:{pack_id}:{page}")],
             [InlineKeyboardButton(text="🏒 Карты в паке", callback_data=f"admin_packs:cards:{pack_id}:1:{page}")],

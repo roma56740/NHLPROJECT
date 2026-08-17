@@ -9,6 +9,7 @@ class AdminPackStates(StatesGroup):
     waiting_for_price = State()
     waiting_for_cards_count = State()
     waiting_for_edit_image = State()
+    waiting_for_edit_animation = State()
     waiting_for_edit_text = State()
     waiting_for_edit_price = State()
     waiting_for_edit_count = State()

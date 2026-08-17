@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-RENDER_CACHE = Path('/app/data/render_cache')
+# Раздел 12 ТЗ по надёжности: render_cache — временные данные, не должен занимать
+# постоянный Railway Volume (/app/data). По умолчанию — /app/cache (пересоздаётся
+# каждый деплой, т.к. лежит вне volume); переопределяется RENDER_CACHE_PATH при
+# необходимости (например для локальной разработки).
+RENDER_CACHE = Path(os.getenv('RENDER_CACHE_PATH', '/app/cache/render_cache'))
 MAX_BYTES = 250 * 1024 * 1024
 TTL_SECONDS = 2 * 60 * 60
 INTERVAL_SECONDS = 30 * 60

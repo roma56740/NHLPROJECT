@@ -26,11 +26,13 @@ from app.keyboards.community import (
     build_players_keyboard,
     build_text_cancel_keyboard,
     build_trade_cards_keyboard,
+    build_trade_cosmetics_keyboard,
     build_trade_offer_profile_keyboard,
     build_trade_offers_keyboard,
     build_trade_wanted_keyboard,
     build_trades_main_keyboard,
     build_wanted_cards_keyboard,
+    build_wanted_cosmetics_keyboard,
 )
 from app.services.community import (
     COMMUNITY_PER_PAGE,
@@ -50,16 +52,22 @@ from app.services.community import (
     delete_clan,
     delete_trade_offer,
     get_available_user_cards_page,
+    get_available_user_cosmetics_page,
     get_card_choices_page,
+    get_cosmetic_choices_page,
     get_clan_profile,
     get_clan_war_player_rating,
     get_clan_global_rating,
+    get_war2_clan_player_contribution,
+    get_war2_clan_rating,
     get_clans_page,
     get_direct_trade_players_page,
     get_players_page,
     get_public_player_profile,
     get_selected_card_choices,
+    get_selected_cosmetic_choices,
     get_selected_user_cards,
+    get_selected_user_cosmetics,
     get_trade_offer_creator_telegram_id,
     get_trade_offer_profile,
     get_trade_offers_page,
@@ -70,6 +78,7 @@ from app.services.community import (
     toggle_clan_active,
 )
 from app.services.currencies import get_user_balances
+from app.services.card_sorting import set_user_card_sort_order
 from app.states.community import CommunityStates
 from app.texts.community import (
     ADMIN_CLANS_TEXT,
@@ -86,6 +95,7 @@ from app.texts.community import (
     TRADE_DIRECT_SEARCH_TEXT,
     TRADE_MAIN_TEXT,
     TRADE_WANTED_CARDS_TEXT,
+    TRADE_WANTED_COSMETICS_TEXT,
     TRADE_WANTED_TEXT,
     build_action_result_text,
     build_clan_member_manage_text,
@@ -96,6 +106,8 @@ from app.texts.community import (
     build_players_page_text,
     build_public_player_profile_text,
     build_trade_card_choices_page_text,
+    build_trade_cosmetic_choices_page_text,
+    build_trade_cosmetics_page_text,
     build_trade_offer_profile_text,
     build_trade_offers_page_text,
     build_trade_user_cards_page_text,
@@ -266,7 +278,9 @@ async def trade_direct_player_select(callback: CallbackQuery, state: FSMContext)
     target_user_id = int(parts[2])
     await state.update_data(
         offered_user_card_ids=[],
+        offered_user_cosmetic_ids=[],
         wanted_card_ids=[],
+        wanted_cosmetic_item_ids=[],
         offer_card_search=None,
         wanted_card_search=None,
         target_user_id=target_user_id,
@@ -275,7 +289,7 @@ async def trade_direct_player_select(callback: CallbackQuery, state: FSMContext)
     await edit_or_send(
         callback,
         TRADE_CREATE_TEXT + "\n\n🎯 Личное предложение выбранному игроку.\n\n" + build_trade_user_cards_page_text(page),
-        reply_markup=build_trade_cards_keyboard(page.cards, page.page, page.pages_count, page.selected_ids),
+        reply_markup=build_trade_cards_keyboard(page.cards, page.page, page.pages_count, page.selected_ids, page.sort_order),
     )
     await callback.answer("Игрок выбран")
 
@@ -287,12 +301,15 @@ async def trade_create(callback: CallbackQuery, state: FSMContext) -> None:
     if user_id is None:
         await callback.answer("Открой профиль через /start", show_alert=True)
         return
-    await state.update_data(offered_user_card_ids=[], wanted_card_ids=[], offer_card_search=None, wanted_card_search=None, target_user_id=None)
+    await state.update_data(
+        offered_user_card_ids=[], offered_user_cosmetic_ids=[], wanted_card_ids=[],
+        wanted_cosmetic_item_ids=[], offer_card_search=None, wanted_card_search=None, target_user_id=None
+    )
     page = await get_available_user_cards_page(user_id=user_id, page=1, per_page=COMMUNITY_PER_PAGE)
     await edit_or_send(
         callback,
         TRADE_CREATE_TEXT + "\n\n" + build_trade_user_cards_page_text(page),
-        reply_markup=build_trade_cards_keyboard(page.cards, page.page, page.pages_count, page.selected_ids),
+        reply_markup=build_trade_cards_keyboard(page.cards, page.page, page.pages_count, page.selected_ids, page.sort_order),
     )
     await callback.answer()
 
@@ -311,7 +328,10 @@ async def trade_offer_cards(callback: CallbackQuery, state: FSMContext) -> None:
     await edit_or_send(
         callback,
         build_trade_user_cards_page_text(page),
-        reply_markup=build_trade_cards_keyboard(page.cards, page.page, page.pages_count, page.selected_ids),
+        reply_markup=build_trade_cards_keyboard(
+            page.cards, page.page, page.pages_count, page.selected_ids, page.sort_order,
+            bool(page.selected_ids or data.get("offered_user_cosmetic_ids")),
+        ),
     )
     await callback.answer()
 
@@ -345,9 +365,91 @@ async def trade_add_offer_card(callback: CallbackQuery, state: FSMContext) -> No
     await edit_or_send(
         callback,
         build_trade_user_cards_page_text(page) + (f"\n\n<b>Выбрано</b>\n{selected_text}" if selected_text else ""),
-        reply_markup=build_trade_cards_keyboard(page.cards, page.page, page.pages_count, selected_ids),
+        reply_markup=build_trade_cards_keyboard(
+            page.cards, page.page, page.pages_count, selected_ids, page.sort_order,
+            bool(selected_ids or data.get("offered_user_cosmetic_ids")),
+        ),
     )
     await callback.answer("Карточка добавлена")
+
+
+@router.callback_query(F.data.startswith("community:trade_sort_offer:"))
+async def trade_sort_offer(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id = await get_current_user_id(callback)
+    if user_id is None:
+        await callback.answer("Открой профиль через /start", show_alert=True)
+        return
+    sort_order = (callback.data or "").split(":")[-1]
+    await set_user_card_sort_order(user_id, sort_order)
+    data = await state.get_data()
+    selected_ids = data.get("offered_user_card_ids", [])
+    page = await get_available_user_cards_page(
+        user_id=user_id, page=1, per_page=COMMUNITY_PER_PAGE,
+        search=data.get("offer_card_search"), selected_ids=selected_ids,
+    )
+    await edit_or_send(
+        callback, build_trade_user_cards_page_text(page),
+        reply_markup=build_trade_cards_keyboard(
+            page.cards, page.page, page.pages_count, selected_ids, page.sort_order,
+            bool(selected_ids or data.get("offered_user_cosmetic_ids")),
+        ),
+    )
+    await callback.answer("Сортировка изменена")
+
+
+@router.callback_query(F.data.startswith("community:trade_offer_cosmetics:"))
+async def trade_offer_cosmetics(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id = await get_current_user_id(callback)
+    if user_id is None:
+        await callback.answer("Открой профиль через /start", show_alert=True)
+        return
+    data = await state.get_data()
+    selected_ids = data.get("offered_user_cosmetic_ids", [])
+    page_num = int((callback.data or "").split(":")[-1])
+    page = await get_available_user_cosmetics_page(
+        user_id=user_id, page=page_num, per_page=COMMUNITY_PER_PAGE, selected_ids=selected_ids,
+    )
+    selected = await get_selected_user_cosmetics(user_id, selected_ids)
+    selected_text = "\n".join(f"✅ {item.title} · экземпляр #{item.id}" for item in selected)
+    text = build_trade_cosmetics_page_text(page)
+    if selected_text:
+        text += f"\n\n<b>Выбрано</b>\n{selected_text}"
+    has_any = bool(selected_ids or data.get("offered_user_card_ids"))
+    await edit_or_send(
+        callback, text,
+        reply_markup=build_trade_cosmetics_keyboard(page.items, page.page, page.pages_count, selected_ids, has_any),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("community:trade_add_offer_cosmetic:"))
+async def trade_add_offer_cosmetic(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id = await get_current_user_id(callback)
+    if user_id is None:
+        await callback.answer("Открой профиль через /start", show_alert=True)
+        return
+    parts = (callback.data or "").split(":")
+    owned_id = int(parts[2])
+    page_num = int(parts[3])
+    data = await state.get_data()
+    selected_ids = list(data.get("offered_user_cosmetic_ids", []))
+    if len(selected_ids) >= 3:
+        await callback.answer("Можно выбрать до 3 экземпляров косметики", show_alert=True)
+        return
+    if owned_id not in selected_ids:
+        selected_ids.append(owned_id)
+    await state.update_data(offered_user_cosmetic_ids=selected_ids)
+    page = await get_available_user_cosmetics_page(
+        user_id=user_id, page=page_num, per_page=COMMUNITY_PER_PAGE, selected_ids=selected_ids,
+    )
+    selected = await get_selected_user_cosmetics(user_id, selected_ids)
+    selected_text = "\n".join(f"✅ {item.title} · экземпляр #{item.id}" for item in selected)
+    await edit_or_send(
+        callback,
+        build_trade_cosmetics_page_text(page) + (f"\n\n<b>Выбрано</b>\n{selected_text}" if selected_text else ""),
+        reply_markup=build_trade_cosmetics_keyboard(page.items, page.page, page.pages_count, selected_ids, True),
+    )
+    await callback.answer("Экземпляр косметики добавлен")
 
 
 @router.callback_query(F.data == "community:trade_search_offer_card")
@@ -371,15 +473,18 @@ async def trade_search_offer_card_value(message: Message, state: FSMContext) -> 
     page = await get_available_user_cards_page(user_id=user_id, page=1, per_page=COMMUNITY_PER_PAGE, search=search, selected_ids=selected_ids)
     await message.answer(
         build_trade_user_cards_page_text(page),
-        reply_markup=build_trade_cards_keyboard(page.cards, page.page, page.pages_count, selected_ids),
+        reply_markup=build_trade_cards_keyboard(
+            page.cards, page.page, page.pages_count, selected_ids, page.sort_order,
+            bool(selected_ids or data.get("offered_user_cosmetic_ids")),
+        ),
     )
 
 
 @router.callback_query(F.data == "community:trade_wanted")
 async def trade_wanted(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    if not data.get("offered_user_card_ids"):
-        await callback.answer("Сначала выбери карточки", show_alert=True)
+    if not data.get("offered_user_card_ids") and not data.get("offered_user_cosmetic_ids"):
+        await callback.answer("Сначала выбери карточки или косметику", show_alert=True)
         return
     await edit_or_send(callback, TRADE_WANTED_TEXT, reply_markup=build_trade_wanted_keyboard())
     await callback.answer()
@@ -419,6 +524,7 @@ async def trade_currency_amount(message: Message, state: FSMContext) -> None:
     result = await create_trade_offer(
         creator_user_id=user_id,
         offered_user_card_ids=data.get("offered_user_card_ids", []),
+        offered_user_cosmetic_ids=data.get("offered_user_cosmetic_ids", []),
         wanted_type="currency",
         wanted_currency_code=data.get("wanted_currency_code"),
         wanted_currency_amount=int(raw_amount),
@@ -442,11 +548,11 @@ async def trade_wanted_cards(callback: CallbackQuery, state: FSMContext) -> None
     data = await state.get_data()
     page_num = int(callback.data.split(":")[-1]) if callback.data else 1
     selected_card_ids = data.get("wanted_card_ids", [])
-    page = await get_card_choices_page(page=page_num, per_page=COMMUNITY_PER_PAGE, search=data.get("wanted_card_search"), selected_card_ids=selected_card_ids)
+    page = await get_card_choices_page(page=page_num, per_page=COMMUNITY_PER_PAGE, search=data.get("wanted_card_search"), selected_card_ids=selected_card_ids, user_id=await get_current_user_id(callback))
     await edit_or_send(
         callback,
         TRADE_WANTED_CARDS_TEXT + "\n\n" + build_trade_card_choices_page_text(page),
-        reply_markup=build_wanted_cards_keyboard(page.cards, page.page, page.pages_count, selected_card_ids),
+        reply_markup=build_wanted_cards_keyboard(page.cards, page.page, page.pages_count, selected_card_ids, page.sort_order),
     )
     await callback.answer()
 
@@ -463,15 +569,107 @@ async def trade_add_wanted_card(callback: CallbackQuery, state: FSMContext) -> N
         return
     selected_card_ids.append(card_id)
     await state.update_data(wanted_card_ids=selected_card_ids)
-    page = await get_card_choices_page(page=page_num, per_page=COMMUNITY_PER_PAGE, search=data.get("wanted_card_search"), selected_card_ids=selected_card_ids)
-    selected_cards = await get_selected_card_choices(selected_card_ids)
+    page = await get_card_choices_page(page=page_num, per_page=COMMUNITY_PER_PAGE, search=data.get("wanted_card_search"), selected_card_ids=selected_card_ids, user_id=await get_current_user_id(callback))
+    selected_cards = await get_selected_card_choices(selected_card_ids, user_id=await get_current_user_id(callback))
     selected_text = "\n".join(f"✅ {card.name} • {card.overall} OVR" for card in selected_cards)
     await edit_or_send(
         callback,
         build_trade_card_choices_page_text(page) + (f"\n\n<b>Выбрано</b>\n{selected_text}" if selected_text else ""),
-        reply_markup=build_wanted_cards_keyboard(page.cards, page.page, page.pages_count, selected_card_ids),
+        reply_markup=build_wanted_cards_keyboard(page.cards, page.page, page.pages_count, selected_card_ids, page.sort_order),
     )
     await callback.answer("Карточка добавлена")
+
+
+@router.callback_query(F.data.startswith("community:trade_sort_wanted:"))
+async def trade_sort_wanted(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id = await get_current_user_id(callback)
+    if user_id is None:
+        await callback.answer("Открой профиль через /start", show_alert=True)
+        return
+    sort_order = (callback.data or "").split(":")[-1]
+    await set_user_card_sort_order(user_id, sort_order)
+    data = await state.get_data()
+    selected_card_ids = data.get("wanted_card_ids", [])
+    page = await get_card_choices_page(
+        page=1, per_page=COMMUNITY_PER_PAGE, search=data.get("wanted_card_search"),
+        selected_card_ids=selected_card_ids, user_id=user_id,
+    )
+    await edit_or_send(
+        callback, TRADE_WANTED_CARDS_TEXT + "\n\n" + build_trade_card_choices_page_text(page),
+        reply_markup=build_wanted_cards_keyboard(page.cards, page.page, page.pages_count, selected_card_ids, page.sort_order),
+    )
+    await callback.answer("Сортировка изменена")
+
+
+@router.callback_query(F.data.startswith("community:trade_wanted_cosmetics:"))
+async def trade_wanted_cosmetics(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    selected_ids = data.get("wanted_cosmetic_item_ids", [])
+    page_num = int((callback.data or "").split(":")[-1])
+    page = await get_cosmetic_choices_page(
+        page=page_num, per_page=COMMUNITY_PER_PAGE, selected_item_ids=selected_ids,
+    )
+    await edit_or_send(
+        callback, TRADE_WANTED_COSMETICS_TEXT + "\n\n" + build_trade_cosmetic_choices_page_text(page),
+        reply_markup=build_wanted_cosmetics_keyboard(page.items, page.page, page.pages_count, selected_ids),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("community:trade_add_wanted_cosmetic:"))
+async def trade_add_wanted_cosmetic(callback: CallbackQuery, state: FSMContext) -> None:
+    parts = (callback.data or "").split(":")
+    cosmetic_item_id = int(parts[2])
+    page_num = int(parts[3])
+    data = await state.get_data()
+    selected_ids = list(data.get("wanted_cosmetic_item_ids", []))
+    if len(selected_ids) >= 3:
+        await callback.answer("Можно выбрать до 3 предметов косметики", show_alert=True)
+        return
+    if cosmetic_item_id not in selected_ids:
+        selected_ids.append(cosmetic_item_id)
+    await state.update_data(wanted_cosmetic_item_ids=selected_ids)
+    page = await get_cosmetic_choices_page(
+        page=page_num, per_page=COMMUNITY_PER_PAGE, selected_item_ids=selected_ids,
+    )
+    selected = await get_selected_cosmetic_choices(selected_ids)
+    selected_text = "\n".join(f"✅ {item.title}" for item in selected)
+    await edit_or_send(
+        callback,
+        build_trade_cosmetic_choices_page_text(page) + (f"\n\n<b>Выбрано</b>\n{selected_text}" if selected_text else ""),
+        reply_markup=build_wanted_cosmetics_keyboard(page.items, page.page, page.pages_count, selected_ids),
+    )
+    await callback.answer("Косметика добавлена")
+
+
+@router.callback_query(F.data == "community:trade_publish_cosmetics")
+async def trade_publish_cosmetics(callback: CallbackQuery, state: FSMContext) -> None:
+    user_id = await get_current_user_id(callback)
+    if user_id is None:
+        await callback.answer("Открой профиль через /start", show_alert=True)
+        return
+    data = await state.get_data()
+    result = await create_trade_offer(
+        creator_user_id=user_id,
+        offered_user_card_ids=data.get("offered_user_card_ids", []),
+        offered_user_cosmetic_ids=data.get("offered_user_cosmetic_ids", []),
+        wanted_type="cards",
+        wanted_asset_type="cosmetics",
+        wanted_cosmetic_item_ids=data.get("wanted_cosmetic_item_ids", []),
+        target_user_id=data.get("target_user_id"),
+    )
+    await state.clear()
+    if result.ok and result.target_telegram_id and result.offer_id:
+        try:
+            await callback.bot.send_message(
+                result.target_telegram_id,
+                "<b>🔁 Новое предложение обмена</b>\n\nТебе отправили личный обмен косметикой.",
+                reply_markup=build_direct_trade_notification_keyboard(result.offer_id),
+            )
+        except Exception:
+            pass
+    await edit_or_send(callback, build_action_result_text(result.title, result.description), reply_markup=build_trades_main_keyboard())
+    await callback.answer()
 
 
 @router.callback_query(F.data == "community:trade_search_wanted_card")
@@ -483,16 +681,19 @@ async def trade_search_wanted_card(callback: CallbackQuery, state: FSMContext) -
 
 @router.message(CommunityStates.trade_search_wanted_card)
 async def trade_search_wanted_card_value(message: Message, state: FSMContext) -> None:
+    user_id = get_user_id_by_telegram_id(message.from_user.id) if message.from_user else None
+    if user_id is None:
+        return
     search = message.text or ""
     await safe_delete_message(message)
     await state.update_data(wanted_card_search=search)
     await state.set_state(None)
     data = await state.get_data()
     selected_card_ids = data.get("wanted_card_ids", [])
-    page = await get_card_choices_page(page=1, per_page=COMMUNITY_PER_PAGE, search=search, selected_card_ids=selected_card_ids)
+    page = await get_card_choices_page(page=1, per_page=COMMUNITY_PER_PAGE, search=search, selected_card_ids=selected_card_ids, user_id=user_id)
     await message.answer(
         build_trade_card_choices_page_text(page),
-        reply_markup=build_wanted_cards_keyboard(page.cards, page.page, page.pages_count, selected_card_ids),
+        reply_markup=build_wanted_cards_keyboard(page.cards, page.page, page.pages_count, selected_card_ids, page.sort_order),
     )
 
 
@@ -506,7 +707,9 @@ async def trade_publish_cards(callback: CallbackQuery, state: FSMContext) -> Non
     result = await create_trade_offer(
         creator_user_id=user_id,
         offered_user_card_ids=data.get("offered_user_card_ids", []),
+        offered_user_cosmetic_ids=data.get("offered_user_cosmetic_ids", []),
         wanted_type="cards",
+        wanted_asset_type="cards",
         wanted_card_ids=data.get("wanted_card_ids", []),
         target_user_id=data.get("target_user_id"),
     )
@@ -645,6 +848,35 @@ async def clan_global_rating(callback: CallbackQuery, state: FSMContext) -> None
     lines = ["🏆 <b>Общий рейтинг кланов</b>", "", "Сортировка: рейтинг клана → победы игроков для клана."]
     for i, row in enumerate(rows, 1):
         lines.append(f"{i}. <b>{escape(row['name'], quote=False)}</b> — ⭐ {int(row['rating_points'])} • 🏒 {int(row['war_wins_contributed'])} побед")
+    await edit_or_send(callback, "\n".join(lines), reply_markup=build_clans_main_keyboard(has_clan=has_clan))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "community:war2_player_contribution")
+async def war2_player_contribution(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user_id = await get_current_user_id(callback)
+    profile = await get_user_clan(user_id) if user_id else None
+    if profile is None:
+        await callback.answer("Ты не состоишь в клане", show_alert=True)
+        return
+    rows = await get_war2_clan_player_contribution(profile.id)
+    lines = [f"🥇 <b>Вклад игроков CLAN WAR 2.0 — {escape(profile.name, quote=False)}</b>", "", "Текущий активный сезон:"]
+    for i, row in enumerate(rows, 1):
+        lines.append(f"{i}. <b>{escape(row['nickname'], quote=False)}</b> — ⭐ {int(row['rating_contributed'])} • 🏒 {int(row['wins_contributed'])} побед • 🎮 {int(row['matches_played'])}")
+    await edit_or_send(callback, "\n".join(lines), reply_markup=build_clans_main_keyboard(has_clan=True))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "community:war2_clan_rating")
+async def war2_clan_rating(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    user_id = await get_current_user_id(callback)
+    has_clan = bool(await get_user_clan(user_id)) if user_id else False
+    rows = await get_war2_clan_rating()
+    lines = ["🏆 <b>Рейтинг кланов CLAN WAR 2.0</b>", "", "Текущий активный сезон."]
+    for i, row in enumerate(rows, 1):
+        lines.append(f"{i}. <b>{escape(row['name'], quote=False)}</b> — ⭐ {int(row['rating_points'])} • 🏒 {int(row['wins_contributed'])} побед • 🎮 {int(row['matches_played'])}")
     await edit_or_send(callback, "\n".join(lines), reply_markup=build_clans_main_keyboard(has_clan=has_clan))
     await callback.answer()
 

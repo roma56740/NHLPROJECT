@@ -118,14 +118,16 @@ async def is_user_subscribed(bot: Bot, user_id: int) -> bool:
     return False
 
 
-def build_subscription_keyboard(settings: SubscriptionSettings) -> InlineKeyboardMarkup:
+def build_subscription_keyboard(settings: SubscriptionSettings, return_payload: str | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     channel_url = build_channel_url(settings.channel_id, settings.channel_url)
-
     if channel_url:
         rows.append([InlineKeyboardButton(text="📢 Подписаться на канал", url=channel_url)])
-
-    rows.append([InlineKeyboardButton(text="✅ Проверить подписку", callback_data=SUBSCRIPTION_CHECK_CALLBACK)])
+    callback_data = SUBSCRIPTION_CHECK_CALLBACK
+    payload = str(return_payload or "").strip()
+    if payload and len(payload) <= 40 and all(ch.isalnum() or ch in "_-" for ch in payload):
+        callback_data = f"{SUBSCRIPTION_CHECK_CALLBACK}:{payload}"
+    rows.append([InlineKeyboardButton(text="✅ Проверить подписку", callback_data=callback_data)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
