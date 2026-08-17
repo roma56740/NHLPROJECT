@@ -16,6 +16,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from app.database.db import get_connection
+from app.services.card_distribution_policy import is_admin_only_card
 from app.services.ranked_common import RankedError
 
 
@@ -123,6 +124,8 @@ def _deliver_reward(connection: sqlite3.Connection, user_id: int, reward: sqlite
             (user_id, reward["pack_id"]),
         )
     elif reward_type == "card" and reward["card_id"]:
+        if is_admin_only_card(connection, int(reward["card_id"])):
+            raise RankedError("ADMIN_ONLY_COLLECTION", "Leaders выдаются только администрацией.")
         connection.execute(
             "INSERT INTO user_cards (user_id, card_id, obtained_from) VALUES (?, ?, 'ranked_pass')",
             (user_id, reward["card_id"]),

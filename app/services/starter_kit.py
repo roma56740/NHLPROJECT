@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from math import ceil
 
 from app.database.db import get_connection
+from app.services.card_distribution_policy import is_admin_only_card
 
 
 @dataclass(frozen=True)
@@ -134,8 +135,11 @@ async def get_starter_kit_cards_page(
             """
             SELECT COUNT(*) AS total_count
             FROM cards
-            WHERE active = 1
-              AND position = ?
+            LEFT JOIN collections ON collections.id = cards.collection_id
+            WHERE cards.active = 1
+              AND cards.position = ?
+              AND LOWER(TRIM(COALESCE(collections.name, ''))) != 'leaders'
+              AND LOWER(TRIM(COALESCE(collections.code, ''))) != 'leaders'
             """,
             (slot.position,),
         )
@@ -160,6 +164,8 @@ async def get_starter_kit_cards_page(
             LEFT JOIN collections ON collections.id = cards.collection_id
             WHERE cards.active = 1
               AND cards.position = ?
+              AND LOWER(TRIM(COALESCE(collections.name, ''))) != 'leaders'
+              AND LOWER(TRIM(COALESCE(collections.code, ''))) != 'leaders'
             ORDER BY cards.overall ASC, cards.name ASC, cards.id ASC
             LIMIT ? OFFSET ?
             """,
@@ -196,6 +202,8 @@ async def set_starter_kit_card(slot_code: str, card_id: int) -> bool:
             return False
 
         if not bool(card_row["active"]) or card_row["position"] != slot.position:
+            return False
+        if is_admin_only_card(connection, card_id):
             return False
 
         connection.execute(
@@ -253,7 +261,10 @@ async def give_starter_kit_to_new_user(user_id: int) -> int:
                 cards.active
             FROM starter_kit_cards
             JOIN cards ON cards.id = starter_kit_cards.card_id
+            JOIN collections ON collections.id = cards.collection_id
             WHERE cards.active = 1
+              AND LOWER(TRIM(COALESCE(collections.name, ''))) != 'leaders'
+              AND LOWER(TRIM(COALESCE(collections.code, ''))) != 'leaders'
               AND starter_kit_cards.slot_code IN ({','.join(['?'] * len(STARTER_KIT_SLOT_ORDER))})
             ORDER BY CASE starter_kit_cards.slot_code
                 WHEN 'G' THEN 1
@@ -288,6 +299,9 @@ async def give_starter_kit_to_new_user(user_id: int) -> int:
             player_key = str(row["player_key"])
 
             if player_key in used_player_keys:
+                continue
+
+            if is_admin_only_card(connection, int(row["card_id"])):
                 continue
 
             used_player_keys.add(player_key)

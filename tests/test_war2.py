@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.database.db import get_connection
-from app.services import war2_cosmetics, war2_core, war2_draft, war2_modes, war2_roster
+from app.services import match_guard, war2_cosmetics, war2_core, war2_draft, war2_modes, war2_roster
 from app.services.war2_common import War2Error
 from app.services.war2_seed import COLLECTION_CODE as LEGENDS_COLLECTION_CODE
 from tests.conftest import create_test_user
@@ -695,3 +695,84 @@ async def test_salary_war_redo_last_round_lets_player_repick(stronghold_db, monk
     await war2_draft.auto_pick_for_opponent(start.match_id)
     state = await war2_draft.get_draft_state(start.match_id)
     assert state["is_complete"] is True
+
+
+# ---------------------------------------------------------------------------
+# R10. Recovery/resume regression tests
+# ---------------------------------------------------------------------------
+
+async def test_old_cancel_button_does_not_release_new_war2_lock(stronghold_db):
+    user_id = await create_test_user("war2-old-cancel-lock")
+    with get_connection() as connection:
+        mode_code = connection.execute("SELECT code FROM war2_modes WHERE active = 1 ORDER BY code LIMIT 1").fetchone()["code"]
+        old_match_id = int(connection.execute(
+            "INSERT INTO war2_matches (status, user_id, opponent_name, opponent_type, mode_code) VALUES ('abandoned', ?, 'Old Bot', 'bot', ?)",
+            (user_id, mode_code),
+        ).lastrowid)
+        current_match_id = int(connection.execute(
+            "INSERT INTO war2_matches (status, user_id, opponent_name, opponent_type, mode_code) VALUES ('drafting', ?, 'Current Bot', 'bot', ?)",
+            (user_id, mode_code),
+        ).lastrowid)
+        connection.commit()
+
+    lock = await match_guard.acquire_player_match_lock(user_id, "war2")
+    assert lock.acquired and lock.lock_id is not None
+    await match_guard.bind_lock_to_match(lock.lock_id, current_match_id)
+
+    assert await war2_core.cancel_war2_match(old_match_id, user_id) is False
+    active = await match_guard.get_active_match(user_id)
+    assert active is not None
+    assert active.match_id == current_match_id
+
+
+async def test_war2_cleanup_uses_heartbeat_and_releases_stale_lock(stronghold_db):
+    user_id = await create_test_user("war2-heartbeat-cleanup")
+    with get_connection() as connection:
+        mode_code = connection.execute("SELECT code FROM war2_modes WHERE active = 1 ORDER BY code LIMIT 1").fetchone()["code"]
+        match_id = int(connection.execute(
+            "INSERT INTO war2_matches (status, user_id, opponent_name, opponent_type, mode_code, created_at) "
+            "VALUES ('drafting', ?, 'Bot', 'bot', ?, datetime('now', '-1 hour'))",
+            (user_id, mode_code),
+        ).lastrowid)
+        connection.commit()
+
+    lock = await match_guard.acquire_player_match_lock(user_id, "war2")
+    assert lock.acquired and lock.lock_id is not None
+    await match_guard.bind_lock_to_match(lock.lock_id, match_id)
+
+    # Несмотря на старый created_at, свежий heartbeat означает, что игрок всё ещё
+    # работает с draft — cleanup не имеет права убивать матч.
+    assert await war2_core.touch_war2_match(user_id, match_id) is True
+    await war2_core.cleanup_abandoned_war2_matches()
+    with get_connection() as connection:
+        assert connection.execute("SELECT status FROM war2_matches WHERE id = ?", (match_id,)).fetchone()["status"] == "drafting"
+
+    # После реального периода бездействия матч и lock должны исчезнуть автоматически.
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE player_match_locks SET heartbeat_at = datetime('now', '-20 minutes') WHERE id = ?",
+            (lock.lock_id,),
+        )
+        connection.commit()
+    await war2_core.cleanup_abandoned_war2_matches()
+    with get_connection() as connection:
+        assert connection.execute("SELECT status FROM war2_matches WHERE id = ?", (match_id,)).fetchone()["status"] == "abandoned"
+    assert await match_guard.get_active_match(user_id) is None
+
+
+async def test_touch_restores_missing_war2_lock(stronghold_db):
+    user_id = await create_test_user("war2-restore-missing-lock")
+    with get_connection() as connection:
+        mode_code = connection.execute("SELECT code FROM war2_modes WHERE active = 1 ORDER BY code LIMIT 1").fetchone()["code"]
+        match_id = int(connection.execute(
+            "INSERT INTO war2_matches (status, user_id, opponent_name, opponent_type, mode_code) VALUES ('drafting', ?, 'Bot', 'bot', ?)",
+            (user_id, mode_code),
+        ).lastrowid)
+        connection.commit()
+
+    assert await match_guard.get_active_match(user_id) is None
+    assert await war2_core.touch_war2_match(user_id, match_id) is True
+    active = await match_guard.get_active_match(user_id)
+    assert active is not None
+    assert active.match_type == "war2"
+    assert active.match_id == match_id

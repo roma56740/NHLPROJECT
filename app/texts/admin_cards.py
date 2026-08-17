@@ -2,7 +2,7 @@ from app.services.salary import format_salary
 from html import escape
 from pathlib import Path
 
-from app.services.admin_cards import CardDraft, CardProfile, CardsPage, CollectionItem
+from app.services.admin_cards import CardDraft, CardProfile, CardsPage, CollectionItem, CardOwnerCopiesPage, CardOwnersPage, CardOwnerCopy
 
 
 ADMIN_CARDS_MAIN_TEXT = """
@@ -259,3 +259,78 @@ def get_edit_field_title(field: str) -> str:
     }
 
     return titles.get(field, "✍️ Новое значение")
+
+
+def build_card_owners_text(page: CardOwnersPage) -> str:
+    return f"""
+<b>👥 Владельцы карточки</b>
+
+🏒 <b>{safe(page.card_name)}</b> · {page.card_overall} OVR
+🆔 Card ID: <b>{page.card_id}</b>
+
+Уникальных владельцев: <b>{page.total_owners}</b>
+Всего экземпляров: <b>{page.total_copies}</b>
+Страница: <b>{page.page}/{page.pages_count}</b>
+
+Выбери владельца, чтобы увидеть все его конкретные экземпляры.
+""".strip()
+
+
+def build_card_owner_copies_text(page: CardOwnerCopiesPage) -> str:
+    username = f"@{safe(page.owner_username)}" if page.owner_username else safe(page.owner_nickname)
+    return f"""
+<b>👤 Карты владельца</b>
+
+🏒 <b>{safe(page.card_name)}</b> · {page.card_overall} OVR
+👤 Владелец: <b>{username}</b>
+🆔 User ID: <b>{page.owner_user_id}</b>
+📱 Telegram ID: <code>{page.owner_telegram_id}</code>
+
+Экземпляров этой карты: <b>{page.total_count}</b>
+Страница: <b>{page.page}/{page.pages_count}</b>
+
+Выбери конкретный экземпляр.
+""".strip()
+
+
+def build_owned_card_copy_text(card: CardProfile, copy: CardOwnerCopy) -> str:
+    username = f"@{safe(copy.username)}" if copy.username else safe(copy.nickname)
+    flags = []
+    if copy.is_in_lineup:
+        flags.append(f"в составе ({safe(copy.lineup_slot)})")
+    if copy.trade_locked:
+        flags.append("trade locked")
+    if copy.has_frame:
+        flags.append("установлена рамка")
+    if copy.is_ranked_captain:
+        flags.append("Ranked Captain")
+    if copy.in_open_trade:
+        flags.append("в открытом обмене")
+    state = ", ".join(flags) if flags else "свободна"
+    return f"""
+<b>🃏 Конкретный экземпляр</b>
+
+🏒 <b>{safe(card.name)}</b> · {card.overall} OVR
+🗂 {safe(card.collection_name)}
+
+👤 Владелец: <b>{username}</b>
+📱 Telegram ID: <code>{copy.telegram_id}</code>
+🆔 user_card_id: <b>{copy.user_card_id}</b>
+📦 Получена из: <b>{safe(copy.obtained_from)}</b>
+⚙️ Состояние: <b>{safe(state)}</b>
+
+Администратор может забрать именно этот экземпляр.
+""".strip()
+
+
+def build_revoke_owned_card_confirm_text(card: CardProfile, copy: CardOwnerCopy) -> str:
+    username = f"@{safe(copy.username)}" if copy.username else safe(copy.nickname)
+    return f"""
+<b>⚠️ Забрать карточку?</b>
+
+🏒 <b>{safe(card.name)}</b> · {card.overall} OVR
+👤 Владелец: <b>{username}</b>
+🆔 Экземпляр: <b>#{copy.user_card_id}</b>
+
+Карточка будет удалена из коллекции владельца. Если она стоит в составе, является Ranked Captain, привязана к рамке или находится в открытом обмене — связанные привязки будут безопасно сняты; открытый обмен будет отменён.
+""".strip()

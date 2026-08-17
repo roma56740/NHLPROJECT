@@ -73,6 +73,11 @@ async def init_database() -> None:
         from app.services.dna_crafting import seed_dna_content
         seed_dna_content(connection)
 
+        # Leaders is admin-issued only.  Run the cleanup on every boot so old
+        # pack/store configuration cannot keep distributing copies after deploy.
+        from app.services.card_distribution_policy import cleanup_admin_only_distribution
+        cleanup_admin_only_distribution(connection)
+
         connection.commit()
 
 

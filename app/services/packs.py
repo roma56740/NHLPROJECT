@@ -8,6 +8,7 @@ from random import SystemRandom
 
 from app.database.db import get_connection
 from app.services.admin_cards import clean_search_query
+from app.services.card_distribution_policy import is_admin_only_card
 
 
 PACK_RANDOM = SystemRandom()
@@ -1048,6 +1049,8 @@ async def get_pack_available_cards_page(pack_id: int, page: int = 1, per_page: i
             FROM cards
             JOIN collections ON collections.id = cards.collection_id
             WHERE cards.active = 1
+              AND LOWER(TRIM(collections.name)) != 'leaders'
+              AND LOWER(TRIM(COALESCE(collections.code, ''))) != 'leaders'
               AND cards.id NOT IN (SELECT card_id FROM pack_cards WHERE pack_id = ?)
               {search_sql}
             """,
@@ -1073,6 +1076,8 @@ async def get_pack_available_cards_page(pack_id: int, page: int = 1, per_page: i
             FROM cards
             JOIN collections ON collections.id = cards.collection_id
             WHERE cards.active = 1
+              AND LOWER(TRIM(collections.name)) != 'leaders'
+              AND LOWER(TRIM(COALESCE(collections.code, ''))) != 'leaders'
               AND cards.id NOT IN (SELECT card_id FROM pack_cards WHERE pack_id = ?)
               {search_sql}
             ORDER BY cards.overall DESC, cards.name
@@ -1091,6 +1096,8 @@ async def add_card_to_pack(pack_id: int, card_id: int) -> bool:
         card_cursor = connection.execute("SELECT id FROM cards WHERE id = ? AND active = 1", (card_id,))
 
         if pack_cursor.fetchone() is None or card_cursor.fetchone() is None:
+            return False
+        if is_admin_only_card(connection, card_id):
             return False
 
         connection.execute(
@@ -1353,7 +1360,12 @@ def select_random_card(
     max_overall: int | None,
     image_hint: str | None,
 ):
-    filters = ["cards.active = 1", "pack_cards.pack_id = ?"]
+    filters = [
+        "cards.active = 1",
+        "pack_cards.pack_id = ?",
+        "LOWER(TRIM(collections.name)) != 'leaders'",
+        "LOWER(TRIM(COALESCE(collections.code, ''))) != 'leaders'",
+    ]
     params: list[object] = [pack_id]
 
     if collection_id is not None:

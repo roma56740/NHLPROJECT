@@ -17,6 +17,11 @@ import json
 import sqlite3
 
 from app.database.db import get_connection
+from app.services.bot_card_policy import (
+    BOT_BLOCKED_COLLECTION_CODE,
+    BOT_BLOCKED_COLLECTION_NAME,
+    is_bot_card_allowed,
+)
 from app.services.lineup import LineupCard
 from app.services.war2_common import War2Error
 
@@ -96,10 +101,12 @@ async def generate_draft_pool(match_id: int) -> list[sqlite3.Row]:
                 SELECT cards.id FROM cards
                 JOIN collections ON collections.id = cards.collection_id
                 WHERE collections.is_exclusive = 0 AND collections.active = 1
+                  AND TRIM(collections.name) COLLATE NOCASE != ?
+                  AND TRIM(COALESCE(collections.code, '')) COLLATE NOCASE != ?
                   AND cards.active = 1 AND cards.position = ?
                 ORDER BY RANDOM() LIMIT ?
                 """,
-                (position, count),
+                (BOT_BLOCKED_COLLECTION_NAME, BOT_BLOCKED_COLLECTION_CODE, position, count),
             ).fetchall()
             if len(rows) < count:
                 connection.rollback()
@@ -280,7 +287,10 @@ async def auto_pick_for_opponent(match_id: int) -> int | None:
     if state["current_picker"] != "opponent" or not state["remaining"]:
         return None
 
-    candidates = allowed_remaining_for_picker(state, "opponent")
+    candidates = [
+        row for row in allowed_remaining_for_picker(state, "opponent")
+        if is_bot_card_allowed(row)
+    ]
     if not candidates:
         raise War2Error(
             "DRAFT_NO_VALID_CARD",

@@ -437,3 +437,113 @@ async def test_cannot_create_pending_result_for_completed_match(stronghold_db):
     ok, msg, pending_id = await create_pending_result(creator_id, tid, match_id, chat_id=1)
     assert ok is False
     assert pending_id is None
+
+
+# ---------------------------------------------------------------------------
+# R11: корректная диагностика готовности/межрежимных lock'ов
+# ---------------------------------------------------------------------------
+
+async def test_incomplete_lineup_stays_waiting_instead_of_failed(stronghold_db):
+    creator_id, tid, players = await _setup_tournament(2, "r11-incomplete")
+    await _register_all(tid, players)
+    matches = await _pending_matches(tid)
+    match_id = int(matches[0]["id"])
+
+    # У второго игрока убираем один слот уже после регистрации.
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE user_cards SET is_in_lineup=0,lineup_slot=NULL WHERE user_id=? AND lineup_slot='F3'",
+            (players[1],),
+        )
+        connection.commit()
+
+    ok1, _, _ = await mark_ready_and_play(match_id, players[0])
+    ok2, msg2, result2 = await mark_ready_and_play(match_id, players[1])
+    assert ok1 is True
+    assert ok2 is False
+    assert result2 is None
+    assert "5/6" in msg2
+
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT status,error_message,attempt_count FROM creator_tournament_matches WHERE id=?",
+            (match_id,),
+        ).fetchone()
+    assert row["status"] == STATUS_WAITING
+    assert "5/6" in row["error_message"]
+    assert int(row["attempt_count"] or 0) == 0
+
+
+async def test_busy_other_mode_stays_waiting_and_can_retry(stronghold_db):
+    from app.services import match_guard
+
+    creator_id, tid, players = await _setup_tournament(2, "r11-busy")
+    await _register_all(tid, players)
+    matches = await _pending_matches(tid)
+    match_id = int(matches[0]["id"])
+
+    lock = await match_guard.acquire_player_match_lock(players[0], "war2", request_id="r11-test-busy")
+    assert lock.acquired
+    try:
+        ok1, _, _ = await mark_ready_and_play(match_id, players[0])
+        ok2, msg2, result2 = await mark_ready_and_play(match_id, players[1])
+        assert ok1 is True
+        assert ok2 is False
+        assert result2 is None
+        assert "Clan War 2.0" in msg2
+        with get_connection() as connection:
+            row = connection.execute(
+                "SELECT status,attempt_count FROM creator_tournament_matches WHERE id=?",
+                (match_id,),
+            ).fetchone()
+        assert row["status"] == STATUS_WAITING
+        assert int(row["attempt_count"] or 0) == 0
+    finally:
+        await match_guard.release_player_match_lock(players[0], status="CANCELLED", reason="test cleanup")
+
+    ok3, msg3, result3 = await mark_ready_and_play(match_id, players[0])
+    assert ok3, msg3
+    assert result3 is not None
+
+
+async def test_tournament_match_does_not_change_normal_progression(stronghold_db):
+    creator_id, tid, players = await _setup_tournament(2, "r11-progression")
+    await _register_all(tid, players)
+    matches = await _pending_matches(tid)
+    match_id = int(matches[0]["id"])
+
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE users SET rating_points=1234,wins=7,losses=5,matches_played=12 WHERE id IN (?,?)",
+            (players[0], players[1]),
+        )
+        before = {
+            int(row["id"]): (int(row["rating_points"]), int(row["wins"]), int(row["losses"]), int(row["matches_played"]))
+            for row in connection.execute(
+                "SELECT id,rating_points,wins,losses,matches_played FROM users WHERE id IN (?,?)",
+                (players[0], players[1]),
+            ).fetchall()
+        }
+        connection.commit()
+
+    ok1, _, _ = await mark_ready_and_play(match_id, players[0])
+    ok2, msg2, result2 = await mark_ready_and_play(match_id, players[1])
+    assert ok1 and ok2, msg2
+    assert result2 is not None
+
+    with get_connection() as connection:
+        after = {
+            int(row["id"]): (int(row["rating_points"]), int(row["wins"]), int(row["losses"]), int(row["matches_played"]))
+            for row in connection.execute(
+                "SELECT id,rating_points,wins,losses,matches_played FROM users WHERE id IN (?,?)",
+                (players[0], players[1]),
+            ).fetchall()
+        }
+        history = connection.execute(
+            "SELECT opponent_type,rating_delta,coins_reward FROM matches WHERE user_id IN (?,?)",
+            (players[0], players[1]),
+        ).fetchall()
+    assert after == before
+    assert history
+    assert all(row["opponent_type"] == "tournament" for row in history)
+    assert all(int(row["rating_delta"]) == 0 and int(row["coins_reward"]) == 0 for row in history)

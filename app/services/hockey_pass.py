@@ -6,6 +6,7 @@ from math import ceil
 from zoneinfo import ZoneInfo
 
 from app.database.db import get_connection
+from app.services.card_distribution_policy import is_admin_only_card
 from app.services.user_cards import give_card_to_user
 from app.services.packs import give_pack_to_user
 
@@ -924,6 +925,8 @@ async def create_reward(draft: RewardDraft) -> int | None:
         pass_cursor = connection.execute("SELECT id FROM hockey_passes WHERE id = ?", (draft.pass_id,))
         if pass_cursor.fetchone() is None:
             return None
+        if draft.reward_type == "card" and draft.card_id is not None and is_admin_only_card(connection, int(draft.card_id)):
+            return None
 
         cursor = connection.execute(
             """
@@ -1161,6 +1164,9 @@ async def claim_reward(telegram_id: int, reward_id: int) -> tuple[ClaimResult | 
             elif row["reward_type"] == "card":
                 if row["card_id"] is None:
                     return None, "Карточка пока не выбрана."
+                if is_admin_only_card(connection, int(row["card_id"])):
+                    connection.rollback()
+                    return None, "Карты Leaders выдаются только администрацией."
                 quantity = max(1, int(row["amount"] or 1))
                 for _ in range(quantity):
                     connection.execute(

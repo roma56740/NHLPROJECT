@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "2026.08.16-current19-r9-dna-safe-deploy-v1"
+VERSION = "2026.08.17-r14-leaders-admin-only-card-owners-safe"
 
 _STARTED_AT = datetime.now(timezone.utc)
 

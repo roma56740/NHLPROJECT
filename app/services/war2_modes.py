@@ -13,6 +13,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from app.database.db import get_connection
+from app.services.bot_card_policy import BOT_BLOCKED_COLLECTION_CODE, BOT_BLOCKED_COLLECTION_NAME
 from app.services.lineup import LineupCard, row_to_lineup_card
 from app.services.war2_common import War2Error
 
@@ -67,11 +68,13 @@ async def build_clone_war_lineup() -> list[int]:
                 SELECT cards.id FROM cards
                 JOIN collections ON collections.id = cards.collection_id
                 WHERE collections.is_exclusive = 0 AND collections.active = 1
+                  AND TRIM(collections.name) COLLATE NOCASE != ?
+                  AND TRIM(COALESCE(collections.code, '')) COLLATE NOCASE != ?
                   AND cards.active = 1 AND cards.position = ?
                   AND cards.overall BETWEEN ? AND ?
                 ORDER BY RANDOM() LIMIT ?
                 """,
-                (position, CLONE_WAR_MIN_OVR, CLONE_WAR_MAX_OVR, count),
+                (BOT_BLOCKED_COLLECTION_NAME, BOT_BLOCKED_COLLECTION_CODE, position, CLONE_WAR_MIN_OVR, CLONE_WAR_MAX_OVR, count),
             ).fetchall()
             if len(rows) < count:
                 raise War2Error(

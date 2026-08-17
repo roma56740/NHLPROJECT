@@ -21,6 +21,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from app.database.db import get_connection
+from app.services.bot_card_policy import BOT_BLOCKED_COLLECTION_CODE, BOT_BLOCKED_COLLECTION_NAME
 from app.services.chemistry import ChemistryCard, calculate_chemistry
 from app.services.lineup import LINEUP_SLOT_ORDER, LineupCard, LineupOverview, get_slot_info
 
@@ -67,10 +68,12 @@ def _catalog_has_exact_lineup(target_ovr: int) -> bool:
             FROM cards
             JOIN collections ON collections.id = cards.collection_id
             WHERE cards.active = 1 AND collections.active = 1
+              AND TRIM(collections.name) COLLATE NOCASE != ?
+              AND TRIM(COALESCE(collections.code, '')) COLLATE NOCASE != ?
               AND cards.overall = ? AND cards.position IN ('F', 'D', 'G')
             GROUP BY cards.position
             """,
-            (target_ovr,),
+            (BOT_BLOCKED_COLLECTION_NAME, BOT_BLOCKED_COLLECTION_CODE, target_ovr),
         ).fetchall()
     counts = {str(row["position"]): int(row["n"] or 0) for row in rows}
     return all(counts.get(position, 0) > 0 for position in ("F", "D", "G"))
@@ -106,7 +109,7 @@ def _select_real_card(
     Bots never manufacture cards and never silently substitute another rating.
     """
     exclude_sql = ""
-    params: list[object] = [position, target_ovr]
+    params: list[object] = [BOT_BLOCKED_COLLECTION_NAME, BOT_BLOCKED_COLLECTION_CODE, position, target_ovr]
     if exclude_card_ids:
         exclude_sql = f"AND cards.id NOT IN ({','.join('?' for _ in exclude_card_ids)})"
         params.extend(sorted(exclude_card_ids))
@@ -116,6 +119,8 @@ def _select_real_card(
         FROM cards
         JOIN collections ON collections.id = cards.collection_id
         WHERE cards.active = 1 AND collections.active = 1
+          AND TRIM(collections.name) COLLATE NOCASE != ?
+          AND TRIM(COALESCE(collections.code, '')) COLLATE NOCASE != ?
           AND cards.position = ? AND cards.overall = ?
           {exclude_sql}
         ORDER BY RANDOM()
@@ -133,11 +138,13 @@ def _select_real_card(
         FROM cards
         JOIN collections ON collections.id = cards.collection_id
         WHERE cards.active = 1 AND collections.active = 1
+          AND TRIM(collections.name) COLLATE NOCASE != ?
+          AND TRIM(COALESCE(collections.code, '')) COLLATE NOCASE != ?
           AND cards.position = ? AND cards.overall = ?
         ORDER BY RANDOM()
         LIMIT 1
         """,
-        (position, target_ovr),
+        (BOT_BLOCKED_COLLECTION_NAME, BOT_BLOCKED_COLLECTION_CODE, position, target_ovr),
     ).fetchone()
 
 
@@ -220,8 +227,16 @@ async def diagnose_catalog_coverage() -> list[dict]:
             position_counts = {}
             for position in ("G", "D", "F"):
                 row = connection.execute(
-                    "SELECT COUNT(*) AS n FROM cards WHERE active = 1 AND position = ? AND overall BETWEEN ? AND ?",
-                    (position, low, high),
+                    """
+                    SELECT COUNT(*) AS n
+                    FROM cards
+                    JOIN collections ON collections.id = cards.collection_id
+                    WHERE cards.active = 1 AND collections.active = 1
+                      AND TRIM(collections.name) COLLATE NOCASE != ?
+                      AND TRIM(COALESCE(collections.code, '')) COLLATE NOCASE != ?
+                      AND cards.position = ? AND cards.overall BETWEEN ? AND ?
+                    """,
+                    (BOT_BLOCKED_COLLECTION_NAME, BOT_BLOCKED_COLLECTION_CODE, position, low, high),
                 ).fetchone()
                 position_counts[position] = int(row["n"])
             report.append(

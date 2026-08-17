@@ -18,6 +18,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from app.database.db import get_connection
 from app.services import ranked_bot, ranked_bot_names, ranked_core, ranked_pass, war2_cosmetics
 from app.services.admin_permissions import PERMISSION_RANKED, has_admin_permission
+from app.services.card_distribution_policy import is_admin_only_card
 from app.services.ranked_common import RankedError
 from app.states.admin_ranked import (
     RankedCosmeticCreateStates,
@@ -462,6 +463,9 @@ async def admin_ranked_pack_slot_card_apply(message: Message, state: FSMContext)
         card_row = connection.execute("SELECT id, name FROM cards WHERE id = ?", (card_id,)).fetchone()
         if card_row is None:
             await message.answer("Карта с таким ID не найдена. Введите ещё раз:")
+            return
+        if is_admin_only_card(connection, card_id):
+            await message.answer("Коллекция Leaders выдаётся только администрацией и не может попадать в Ranked-паки. Введите другую карту:")
             return
         try:
             connection.execute(

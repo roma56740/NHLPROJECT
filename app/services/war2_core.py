@@ -183,25 +183,96 @@ async def find_war2_opponent(user_id: int) -> War2Opponent:
 
 
 async def cleanup_abandoned_war2_matches() -> None:
-    """Помечает зависшие драфты 'abandoned' И сразу освобождает их match lock —
-    иначе пользователь оставался бы заблокированным вплоть до истечения TTL
-    match lock'а (30 минут для war2, см. match_guard.MATCH_TYPE_TTL_SECONDS),
-    что дольше самого таймаута драфта (ABANDONED_MATCH_TIMEOUT_MINUTES=10)."""
+    """Автоматически закрывает действительно заброшенные War 2.0 драфты.
+
+    Раньше таймаут считался только от ``war2_matches.created_at``. Из-за этого
+    матч мог считаться брошенным даже если пользователь всё ещё делал пики, а
+    глобальный match-lock при этом жил своей отдельной 30-минутной жизнью.
+    Теперь источником активности служит heartbeat глобального lock'а; каждый
+    пользовательский шаг War 2.0 обновляет heartbeat через ``touch_war2_match``.
+    Если активности нет дольше ABANDONED_MATCH_TIMEOUT_MINUTES, матч переводится
+    в ``abandoned`` и lock освобождается сразу.
+    """
     with get_connection() as connection:
         stale_rows = connection.execute(
-            "SELECT user_id FROM war2_matches WHERE status = 'drafting' AND datetime(created_at) < datetime('now', ?)",
+            """
+            SELECT wm.id AS match_id, wm.user_id
+            FROM war2_matches wm
+            LEFT JOIN player_match_locks pml
+              ON pml.user_id = wm.user_id
+             AND pml.match_id = wm.id
+             AND pml.match_type = 'war2'
+             AND pml.status IN ('ACQUIRING', 'ACTIVE', 'RESOLVING')
+            WHERE wm.status = 'drafting'
+              AND datetime(COALESCE(pml.heartbeat_at, wm.created_at)) < datetime('now', ?)
+            """,
             (f"-{ABANDONED_MATCH_TIMEOUT_MINUTES} minutes",),
         ).fetchall()
-        stale_user_ids = [int(row["user_id"]) for row in stale_rows]
+        stale = [(int(row["match_id"]), int(row["user_id"])) for row in stale_rows]
 
-        connection.execute(
-            "UPDATE war2_matches SET status = 'abandoned' WHERE status = 'drafting' AND datetime(created_at) < datetime('now', ?)",
-            (f"-{ABANDONED_MATCH_TIMEOUT_MINUTES} minutes",),
-        )
-        connection.commit()
+        if stale:
+            match_ids = [match_id for match_id, _ in stale]
+            placeholders = ",".join("?" for _ in match_ids)
+            connection.execute(
+                f"UPDATE war2_matches SET status = 'abandoned' "
+                f"WHERE status = 'drafting' AND id IN ({placeholders})",
+                match_ids,
+            )
+            connection.commit()
 
-    for user_id in stale_user_ids:
-        await match_guard.cancel_match(user_id, reason="WAR2_DRAFT_TIMEOUT")
+    for match_id, user_id in stale:
+        active = await match_guard.get_active_match(user_id)
+        if active is not None and active.match_type == "war2" and active.match_id == match_id:
+            await match_guard.cancel_match(user_id, reason="WAR2_DRAFT_TIMEOUT")
+
+
+async def get_active_drafting_match(user_id: int) -> sqlite3.Row | None:
+    """Возвращает незавершённый War 2.0 матч пользователя, если он ещё жив.
+
+    Перед чтением выполняется cleanup, поэтому кнопка «Продолжить матч» никогда
+    не ведёт в давно брошенный драфт.
+    """
+    await cleanup_abandoned_war2_matches()
+    with get_connection() as connection:
+        return connection.execute(
+            """
+            SELECT * FROM war2_matches
+            WHERE user_id = ? AND status = 'drafting'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+
+
+async def touch_war2_match(user_id: int, match_id: int) -> bool:
+    """Heartbeat активного War 2.0 матча и восстановление его lock при необходимости.
+
+    Старые inline-кнопки не могут продлить/снять lock другого матча: если у
+    пользователя уже есть активный lock другого типа или другого match_id,
+    возвращается False. Если сам drafting-матч жив, но lock потерялся после
+    рестарта/ошибки процесса, lock безопасно создаётся заново и привязывается к
+    этому match_id.
+    """
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT id FROM war2_matches WHERE id = ? AND user_id = ? AND status = 'drafting'",
+            (match_id, user_id),
+        ).fetchone()
+    if row is None:
+        return False
+
+    active = await match_guard.get_active_match(user_id)
+    if active is None:
+        lock = await match_guard.acquire_player_match_lock(user_id, "war2")
+        if not lock.acquired or lock.lock_id is None:
+            return False
+        await match_guard.bind_lock_to_match(lock.lock_id, match_id)
+    else:
+        if active.match_type != "war2" or active.match_id != match_id:
+            return False
+
+    await match_guard.heartbeat_lock(user_id, extend_seconds=match_guard.ttl_for("war2"))
+    return True
 
 
 async def start_war2_match(user_id: int) -> War2MatchStart:
@@ -241,6 +312,7 @@ async def start_war2_match(user_id: int) -> War2MatchStart:
         detail = await match_guard.describe_active_match_short(lock.existing) if lock.existing else ""
         raise War2Error("MATCH_ALREADY_ACTIVE", f"У вас уже идёт матч, дождитесь его завершения. {detail}".strip())
 
+    match_id: int | None = None
     try:
         season = await get_active_season()
         opponent = await find_war2_opponent(user_id)
@@ -281,6 +353,13 @@ async def start_war2_match(user_id: int) -> War2MatchStart:
 
             await generate_draft_pool(match_id)
     except Exception:
+        if match_id is not None:
+            with get_connection() as connection:
+                connection.execute(
+                    "UPDATE war2_matches SET status = 'abandoned' WHERE id = ? AND user_id = ? AND status = 'drafting'",
+                    (match_id, user_id),
+                )
+                connection.commit()
         await match_guard.cancel_match(user_id, reason="WAR2_START_ERROR")
         raise
 
@@ -440,16 +519,26 @@ async def record_war2_match_result(
     )
 
 
-async def cancel_war2_match(match_id: int, user_id: int) -> None:
-    """Отмена во время драфта (игрок вышел из экрана) — билет НЕ списывается (см.
-    докстринг start_war2_match: списание только на 'completed')."""
+async def cancel_war2_match(match_id: int, user_id: int) -> bool:
+    """Отмена во время драфта; билет не списывается.
+
+    Возвращает True только если именно этот незавершённый матч был отменён.
+    Это важно для старых Telegram-кнопок: нажатие «Отменить» в старом сообщении
+    больше не может случайно снять lock с нового матча пользователя.
+    """
     with get_connection() as connection:
-        connection.execute(
+        cursor = connection.execute(
             "UPDATE war2_matches SET status = 'abandoned' WHERE id = ? AND user_id = ? AND status = 'drafting'",
             (match_id, user_id),
         )
+        changed = cursor.rowcount > 0
         connection.commit()
-    await match_guard.cancel_match(user_id, reason="WAR2_DRAFT_ABANDONED")
+
+    if changed:
+        active = await match_guard.get_active_match(user_id)
+        if active is not None and active.match_type == "war2" and active.match_id == match_id:
+            await match_guard.cancel_match(user_id, reason="WAR2_DRAFT_ABANDONED")
+    return changed
 
 
 async def get_match(match_id: int, user_id: int) -> sqlite3.Row | None:

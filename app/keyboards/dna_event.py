@@ -1,6 +1,8 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.services.dna_crafting import DNA_TARGETS, DnaChoicePage, DnaCraftPreview, DnaExtractionPreview
+from app.services.dna_crafting import (
+    DNA_TARGETS, DnaChoicePage, DnaCraftPreview, DnaExtractionCandidatePage, DnaExtractionPreview,
+)
 
 
 def build_dna_main_keyboard() -> InlineKeyboardMarkup:
@@ -51,6 +53,50 @@ def build_dna_extraction_keyboard(items: tuple[DnaExtractionPreview, ...]) -> In
     rows.append([InlineKeyboardButton(text="⬅️ DNA", callback_data="dna:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
+
+def build_dna_extraction_selection_keyboard(
+    page: DnaExtractionCandidatePage, selected_ids: tuple[int, ...]
+) -> InlineKeyboardMarkup:
+    selected = set(int(value) for value in selected_ids)
+    rows = []
+    for card in page.items:
+        marker = "✅" if card.user_card_id in selected else "▫️"
+        collection = card.collection_name
+        if len(collection) > 18:
+            collection = collection[:17] + "…"
+        name = card.name
+        if len(name) > 24:
+            name = name[:23] + "…"
+        rows.append([InlineKeyboardButton(
+            text=f"{marker} {name} {card.overall} · {collection} · #{card.user_card_id}",
+            callback_data=f"dna:extoggle:{card.user_card_id}:{page.page}",
+        )])
+
+    nav = []
+    if page.page > 1:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"dna:expage:{page.page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"{page.page}/{page.pages_count}", callback_data="dna:noop"))
+    if page.page < page.pages_count:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"dna:expage:{page.page + 1}"))
+    if nav:
+        rows.append(nav)
+
+    if len(selected) == page.recipe.cards_required:
+        rows.append([InlineKeyboardButton(
+            text=f"🧬 Переработать выбранные → +{page.recipe.collectibles_reward}",
+            callback_data="dna:exconfirm",
+        )])
+    else:
+        rows.append([InlineKeyboardButton(
+            text=f"Выбрано {len(selected)}/{page.recipe.cards_required}",
+            callback_data="dna:noop",
+        )])
+
+    if selected:
+        rows.append([InlineKeyboardButton(text="♻️ Сбросить выбор", callback_data="dna:exreset")])
+    rows.append([InlineKeyboardButton(text="⬅️ К рецептам Extraction", callback_data="dna:extract")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def build_dna_choice_keyboard(page: DnaChoicePage) -> InlineKeyboardMarkup:
     rows = []

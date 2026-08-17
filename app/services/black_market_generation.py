@@ -162,6 +162,7 @@ _POOL_ITEM_VALIDITY_SQL = """
     LEFT JOIN currencies cur ON bmpi.item_type = 'currency' AND cur.code = bmpi.currency_code
     LEFT JOIN packs p ON bmpi.item_type = 'pack' AND p.id = bmpi.pack_id
     LEFT JOIN cards c ON bmpi.item_type = 'card' AND c.id = bmpi.card_id
+    LEFT JOIN collections col ON c.collection_id = col.id
     LEFT JOIN war2_cosmetic_items wci ON bmpi.item_type = 'cosmetic' AND wci.id = bmpi.cosmetic_item_id
     WHERE bmpi.active = 1
       AND (bmpi.available_from IS NULL OR bmpi.available_from <= datetime('now'))
@@ -169,7 +170,9 @@ _POOL_ITEM_VALIDITY_SQL = """
       AND (
         (bmpi.item_type = 'currency' AND cur.code IS NOT NULL AND cur.active = 1)
         OR (bmpi.item_type = 'pack' AND p.id IS NOT NULL AND p.active = 1)
-        OR (bmpi.item_type = 'card' AND c.id IS NOT NULL AND c.active = 1)
+        OR (bmpi.item_type = 'card' AND c.id IS NOT NULL AND c.active = 1
+            AND LOWER(TRIM(col.name)) != 'leaders'
+            AND LOWER(TRIM(COALESCE(col.code, ''))) != 'leaders')
         OR (bmpi.item_type = 'cosmetic' AND wci.id IS NOT NULL AND wci.active = 1)
       )
 """

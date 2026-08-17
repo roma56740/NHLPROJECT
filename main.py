@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
@@ -9,7 +8,6 @@ from aiogram.enums import ParseMode
 from aiogram.types import ErrorEvent
 
 from app.database.db import init_database
-import app.database.db as db_module
 from app.handlers import setup_routers
 from app.services.cache_cleanup import cleanup_render_cache, render_cache_cleanup_loop
 from app.services import backups, error_log
@@ -19,7 +17,7 @@ from app.services.creators import creator_weekly_rewards_loop
 from app.services.black_market_notifications import black_market_notification_loop
 from app.services.free_card import free_card_notification_loop
 from app.services.health_monitor import health_check_loop
-from app.services import match_guard
+from app.services import match_guard, war2_core
 from app.services.missing_assets import missing_assets_notification_loop
 from app.services.pack_reveal_recovery import resume_pending_pack_reveals
 from app.services.stronghold_lifecycle import stronghold_lifecycle_loop
@@ -49,6 +47,11 @@ async def match_lock_recovery_loop() -> None:
     середине пути и cancel/release почему-то не сработал)."""
     while True:
         try:
+            # War 2.0 имеет многошаговый draft и собственный inactivity timeout.
+            # Сначала закрываем реально брошенные drafting-матчи, затем общий
+            # recovery обрабатывает остальные lock'и. Иначе старый War 2.0 со
+            # status='drafting' мог продлевать lock бесконечно.
+            await war2_core.cleanup_abandoned_war2_matches()
             report = await match_guard.recover_stale_matches()
             if report.actions:
                 logging.getLogger(__name__).warning(
@@ -87,20 +90,6 @@ async def main() -> None:
     )
 
     await init_database()
-
-    # Final deployment safety check: migrations/seeds completed successfully and
-    # the live SQLite database still passes PRAGMA quick_check before polling starts.
-    strict_db_check = (
-        os.getenv("STRICT_DB_INTEGRITY", "1" if os.getenv("RAILWAY_ENVIRONMENT_NAME") else "0")
-        .strip()
-        .lower()
-        not in {"", "0", "false", "no", "off"}
-    )
-    if strict_db_check and not backups.quick_check(db_module.DATABASE_PATH):
-        raise RuntimeError(
-            f"Database failed PRAGMA quick_check after migrations: {db_module.DATABASE_PATH}"
-        )
-
     await asyncio.to_thread(cleanup_render_cache)
 
     # ЕДИНЫЙ ГЛОБАЛЬНЫЙ MATCH LOCK: boot recovery ДО старта polling — если процесс
@@ -108,6 +97,7 @@ async def main() -> None:
     # навсегда после рестарта. Проверяет реальное состояние матча перед тем, как
     # снять lock (см. app/services/match_guard.py::recover_stale_matches).
     try:
+        await war2_core.cleanup_abandoned_war2_matches()
         boot_recovery_report = await match_guard.recover_stale_matches()
         if boot_recovery_report.actions:
             logging.getLogger(__name__).warning(

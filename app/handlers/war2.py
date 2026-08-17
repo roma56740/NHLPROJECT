@@ -55,18 +55,33 @@ async def _build_war2_main_screen(telegram_id: int) -> tuple[str, InlineKeyboard
 
     remaining = await war2_core.get_remaining_tickets(profile.id)
     season = await war2_core.get_active_season()
+    active_match = await war2_core.get_active_drafting_match(profile.id)
     season_line = f"Сезон #{season.season_number}, до {season.ends_at}" if season else "Сезон не запущен."
+    active_line = ""
+    if active_match is not None:
+        active_line = (
+            "\n⚠️ <b>Есть незавершённый матч.</b> "
+            f"Соперник: {active_match['opponent_name'] or '—'}.\n"
+        )
     text = (
         "<b>⚔️ CLAN WAR 2.0</b>\n\n"
         f"{season_line}\n"
-        f"Билетов сегодня: {remaining}/5\n\n"
+        f"Билетов сегодня: {remaining}/5\n"
+        f"{active_line}\n"
         "Найди соперника, дождись War Roulette и собери состав в выбранном режиме."
     )
-    keyboard = [
-        [InlineKeyboardButton(text="🎲 Найти матч", callback_data="war2:start")],
+    keyboard = []
+    if active_match is not None:
+        keyboard.extend([
+            [InlineKeyboardButton(text="▶️ Продолжить матч", callback_data=f"war2:resume:{int(active_match['id'])}")],
+            [InlineKeyboardButton(text="❌ Отменить текущий матч", callback_data=f"war2:cancel:{int(active_match['id'])}")],
+        ])
+    else:
+        keyboard.append([InlineKeyboardButton(text="🎲 Найти матч", callback_data="war2:start")])
+    keyboard.extend([
         [InlineKeyboardButton(text="👥 Ростер клана", callback_data="war2:roster")],
         [InlineKeyboardButton(text="🎨 Косметика", callback_data="cosmetics:main")],
-    ]
+    ])
     if is_admin(telegram_id):
         keyboard.append([InlineKeyboardButton(text="🛠 Админка CLAN WAR 2.0", callback_data="admin_war2:main")])
     keyboard.append(_back_row("community:main"))
@@ -97,11 +112,74 @@ async def war2_main(callback: CallbackQuery) -> None:
     await _edit_or_send(callback, text, keyboard)
 
 
+async def _resume_war2_match(callback: CallbackQuery, match_id: int, user_id: int) -> None:
+    """Восстанавливает экран незавершённого Clan War 2.0 после потери сообщения,
+    перезапуска Telegram или повторного входа в режим."""
+    row = await war2_core.get_match(match_id, user_id)
+    if row is None or row["status"] != "drafting":
+        await callback.answer("Этот матч уже завершён или отменён.", show_alert=True)
+        await war2_main(callback)
+        return
+
+    if not await war2_core.touch_war2_match(user_id, match_id):
+        await callback.answer("Матч уже недоступен.", show_alert=True)
+        await war2_main(callback)
+        return
+
+    mode = war2_modes.WAR2_MODE_REGISTRY.get(row["mode_code"])
+    if mode is None:
+        await callback.answer("Режим этого матча больше недоступен. Матч можно отменить.", show_alert=True)
+        return
+
+    if not mode.uses_draft:
+        import json as _json
+        stored = _json.loads(row["user_lineup_json"]) if row["user_lineup_json"] and row["user_lineup_json"] != "[]" else None
+        if stored:
+            await _show_confirm_screen(callback, match_id, [int(card_id) for card_id in stored])
+            return
+        text = (
+            "<b>🎲 War Roulette</b>\n\n"
+            f"Соперник: {row['opponent_name']}" + (" (бот)" if row["opponent_type"] == "bot" else "") + "\n"
+            f"Режим: <b>{mode.title}</b>\n\n"
+            "Clone War: одинаковый состав для обеих сторон, без выбора карт."
+        )
+        keyboard = [
+            [InlineKeyboardButton(text="▶️ Собрать состав", callback_data=f"war2:clone:{match_id}")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data=f"war2:cancel:{match_id}")],
+        ]
+        await _edit_or_send(callback, text, InlineKeyboardMarkup(inline_keyboard=keyboard))
+        return
+
+    # Старые незавершённые матчи могли остаться без draft pool после ошибки в
+    # предыдущих версиях. generate_draft_pool() идемпотентен и безопасно чинит их.
+    await war2_draft.generate_draft_pool(match_id)
+    state = await war2_draft.get_draft_state(match_id)
+    if state["is_complete"]:
+        await _after_draft_complete(callback, match_id)
+    else:
+        await _render_draft_screen(callback, match_id, 1)
+
+
+@router.callback_query(F.data.startswith("war2:resume:"))
+async def war2_resume(callback: CallbackQuery) -> None:
+    profile = await get_player_profile_by_telegram_id(callback.from_user.id)
+    if profile is None:
+        await callback.answer("Открой игру через /start.", show_alert=True)
+        return
+    match_id = int(callback.data.split(":")[2])
+    await _resume_war2_match(callback, match_id, profile.id)
+
+
 @router.callback_query(F.data == "war2:start")
 async def war2_start(callback: CallbackQuery) -> None:
     profile = await get_player_profile_by_telegram_id(callback.from_user.id)
     if profile is None:
         await callback.answer("Открой игру через /start.", show_alert=True)
+        return
+
+    existing = await war2_core.get_active_drafting_match(profile.id)
+    if existing is not None:
+        await _resume_war2_match(callback, int(existing["id"]), profile.id)
         return
 
     try:
@@ -142,14 +220,21 @@ async def war2_cancel(callback: CallbackQuery) -> None:
         await callback.answer()
         return
     match_id = int(callback.data.split(":")[2])
-    await war2_core.cancel_war2_match(match_id, profile.id)
-    await callback.answer("Матч отменён. Билет не списан.")
+    cancelled = await war2_core.cancel_war2_match(match_id, profile.id)
+    if cancelled:
+        await callback.answer("Матч отменён. Билет не списан.")
+    else:
+        await callback.answer("Этот матч уже завершён или отменён.", show_alert=True)
     await war2_main(callback)
 
 
 @router.callback_query(F.data.startswith("war2:clone:"))
 async def war2_clone(callback: CallbackQuery) -> None:
     match_id = int(callback.data.split(":")[2])
+    profile = await get_player_profile_by_telegram_id(callback.from_user.id)
+    if profile is None or not await war2_core.touch_war2_match(profile.id, match_id):
+        await callback.answer("Матч уже завершён или отменён.", show_alert=True)
+        return
     try:
         card_ids = await war2_modes.build_clone_war_lineup()
     except War2Error as error:
@@ -190,6 +275,10 @@ async def _advance_opponent_picks(match_id: int) -> None:
 
 
 async def _render_draft_screen(callback: CallbackQuery, match_id: int, page: int) -> None:
+    profile = await get_player_profile_by_telegram_id(callback.from_user.id)
+    if profile is None or not await war2_core.touch_war2_match(profile.id, match_id):
+        await callback.answer("Матч уже завершён или отменён.", show_alert=True)
+        return
     await _advance_opponent_picks(match_id)
     state = await war2_draft.get_draft_state(match_id)
 
@@ -228,6 +317,10 @@ async def _render_draft_screen(callback: CallbackQuery, match_id: int, page: int
 async def war2_pick(callback: CallbackQuery) -> None:
     _, _, match_id_text, card_id_text = callback.data.split(":")
     match_id, card_id = int(match_id_text), int(card_id_text)
+    profile = await get_player_profile_by_telegram_id(callback.from_user.id)
+    if profile is None or not await war2_core.touch_war2_match(profile.id, match_id):
+        await callback.answer("Матч уже завершён или отменён.", show_alert=True)
+        return
     try:
         await war2_draft.record_pick(match_id, "user", card_id)
     except War2Error as error:
@@ -240,6 +333,9 @@ async def _after_draft_complete(callback: CallbackQuery, match_id: int) -> None:
     profile = await get_player_profile_by_telegram_id(callback.from_user.id)
     if profile is None:
         await callback.answer()
+        return
+    if not await war2_core.touch_war2_match(profile.id, match_id):
+        await callback.answer("Матч уже завершён или отменён.", show_alert=True)
         return
 
     with_wild_card = await _match_mode_allows_wild_card(match_id)
@@ -274,6 +370,10 @@ async def _match_mode_allows_wild_card(match_id: int) -> bool:
 @router.callback_query(F.data.startswith("war2:wc:"))
 async def war2_wildcard_choose_target(callback: CallbackQuery) -> None:
     match_id = int(callback.data.split(":")[2])
+    profile = await get_player_profile_by_telegram_id(callback.from_user.id)
+    if profile is None or not await war2_core.touch_war2_match(profile.id, match_id):
+        await callback.answer("Матч уже завершён или отменён.", show_alert=True)
+        return
     picks = await war2_draft.finalize_lineup_for(match_id, "user")
     text = "<b>🃏 Wild Card</b>\n\nКакую карту заменить?"
     keyboard = [
@@ -294,6 +394,9 @@ async def _render_own_cards_page(callback: CallbackQuery, match_id: int, replace
     profile = await get_player_profile_by_telegram_id(callback.from_user.id)
     if profile is None:
         await callback.answer()
+        return
+    if not await war2_core.touch_war2_match(profile.id, match_id):
+        await callback.answer("Матч уже завершён или отменён.", show_alert=True)
         return
     own_page = await get_player_cards_page(profile.id, page=page, per_page=5)
     sort_label = "слабые → сильные" if own_page.sort_order == "ovr_asc" else "сильные → слабые"
@@ -351,6 +454,9 @@ async def war2_wildcard_apply(callback: CallbackQuery) -> None:
     if profile is None:
         await callback.answer()
         return
+    if not await war2_core.touch_war2_match(profile.id, match_id):
+        await callback.answer("Матч уже завершён или отменён.", show_alert=True)
+        return
     try:
         new_roster, _replaced = await war2_modes.apply_wild_card_replacement(match_id, profile.id, replace_card_id, user_card_id)
     except War2Error as error:
@@ -360,6 +466,10 @@ async def war2_wildcard_apply(callback: CallbackQuery) -> None:
 
 
 async def _show_confirm_screen(callback: CallbackQuery, match_id: int, card_ids: list[int], is_wild_card: bool = False) -> None:
+    profile = await get_player_profile_by_telegram_id(callback.from_user.id)
+    if profile is None or not await war2_core.touch_war2_match(profile.id, match_id):
+        await callback.answer("Матч уже завершён или отменён.", show_alert=True)
+        return
     roster = await war2_draft.build_ephemeral_lineup(card_ids)
 
     from app.database.db import get_connection
@@ -394,6 +504,10 @@ async def _show_confirm_screen(callback: CallbackQuery, match_id: int, card_ids:
 @router.callback_query(F.data.startswith("war2:redo:"))
 async def war2_redo_last_round(callback: CallbackQuery) -> None:
     match_id = int(callback.data.split(":")[2])
+    profile = await get_player_profile_by_telegram_id(callback.from_user.id)
+    if profile is None or not await war2_core.touch_war2_match(profile.id, match_id):
+        await callback.answer("Матч уже завершён или отменён.", show_alert=True)
+        return
     try:
         round_number = await war2_draft.redo_last_round(match_id)
     except War2Error as error:
@@ -409,6 +523,9 @@ async def war2_confirm(callback: CallbackQuery) -> None:
     profile = await get_player_profile_by_telegram_id(callback.from_user.id)
     if profile is None:
         await callback.answer()
+        return
+    if not await war2_core.touch_war2_match(profile.id, match_id):
+        await callback.answer("Матч уже завершён или отменён.", show_alert=True)
         return
 
     from app.database.db import get_connection

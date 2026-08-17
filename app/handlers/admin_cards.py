@@ -13,6 +13,10 @@ from app.keyboards.admin_cards import (
     build_admin_card_back_keyboard,
     build_admin_card_edit_keyboard,
     build_admin_card_profile_keyboard,
+    build_admin_card_owners_keyboard,
+    build_admin_card_owner_copies_keyboard,
+    build_admin_card_copy_keyboard,
+    build_admin_card_revoke_confirm_keyboard,
     build_admin_cards_cancel_keyboard,
     build_admin_cards_confirm_keyboard,
     build_admin_cards_list_keyboard,
@@ -25,6 +29,10 @@ from app.services.admin_cards import (
     CardDraft,
     create_card,
     get_card_profile,
+    get_card_owners_page,
+    get_card_owner_copies_page,
+    get_owned_card_copy,
+    revoke_owned_card_copy,
     get_cards_page,
     get_collections,
     toggle_card_active,
@@ -62,6 +70,10 @@ from app.texts.admin_cards import (
     build_card_draft_text,
     build_card_edit_text,
     build_card_profile_text,
+    build_card_owners_text,
+    build_card_owner_copies_text,
+    build_owned_card_copy_text,
+    build_revoke_owned_card_confirm_text,
     build_cards_page_text,
     build_collections_text,
     build_edit_image_text,
@@ -929,6 +941,151 @@ async def admin_cards_edit_image_value(message: Message, state: FSMContext) -> N
         build_card_profile_text(card),
         reply_markup=build_admin_card_profile_keyboard(card.id, page=page, active=card.active),
     )
+
+
+
+@router.callback_query(F.data.startswith("admin_cards:owners:"))
+async def admin_cards_owners(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+    await state.clear()
+    parts = callback.data.split(":") if callback.data else []
+    if len(parts) < 4:
+        await callback.answer("Некорректная карточка", show_alert=True)
+        return
+    card_id = int(parts[2])
+    page = int(parts[3])
+    owners = await get_card_owners_page(card_id, page=page)
+    if owners is None:
+        await callback.answer("Карточка не найдена", show_alert=True)
+        return
+    await edit_admin_message(callback, build_card_owners_text(owners), reply_markup=build_admin_card_owners_keyboard(owners))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_cards:owner:"))
+async def admin_cards_owner_copies(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+    await state.clear()
+    parts = callback.data.split(":") if callback.data else []
+    if len(parts) < 6:
+        await callback.answer("Некорректный владелец", show_alert=True)
+        return
+    card_id = int(parts[2])
+    owner_user_id = int(parts[3])
+    owners_page = int(parts[4])
+    copies_page = int(parts[5])
+    copies = await get_card_owner_copies_page(card_id, owner_user_id, page=copies_page)
+    if copies is None:
+        await callback.answer("Владелец или карточка не найдены", show_alert=True)
+        return
+    if copies.total_count <= 0:
+        owners = await get_card_owners_page(card_id, page=owners_page)
+        if owners is None:
+            await callback.answer("Карточка не найдена", show_alert=True)
+            return
+        await edit_admin_message(callback, build_card_owners_text(owners), reply_markup=build_admin_card_owners_keyboard(owners))
+        await callback.answer("У игрока больше нет этой карты")
+        return
+    await edit_admin_message(
+        callback,
+        build_card_owner_copies_text(copies),
+        reply_markup=build_admin_card_owner_copies_keyboard(copies, owners_page),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_cards:copy:"))
+async def admin_cards_owner_copy(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+    await state.clear()
+    parts = callback.data.split(":") if callback.data else []
+    if len(parts) < 7:
+        await callback.answer("Некорректный экземпляр", show_alert=True)
+        return
+    card_id = int(parts[2])
+    owner_user_id = int(parts[3])
+    owners_page = int(parts[4])
+    user_card_id = int(parts[5])
+    copies_page = int(parts[6])
+    card = await get_card_profile(card_id)
+    copy = await get_owned_card_copy(user_card_id)
+    if card is None or copy is None or copy.user_id != owner_user_id:
+        await callback.answer("Экземпляр уже недоступен", show_alert=True)
+        return
+    await edit_admin_message(
+        callback,
+        build_owned_card_copy_text(card, copy),
+        reply_markup=build_admin_card_copy_keyboard(card_id, owner_user_id, owners_page, user_card_id, copies_page),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_cards:revoke_confirm:"))
+async def admin_cards_revoke_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+    await state.clear()
+    parts = callback.data.split(":") if callback.data else []
+    if len(parts) < 7:
+        await callback.answer("Некорректный экземпляр", show_alert=True)
+        return
+    card_id = int(parts[2])
+    owner_user_id = int(parts[3])
+    owners_page = int(parts[4])
+    user_card_id = int(parts[5])
+    copies_page = int(parts[6])
+    card = await get_card_profile(card_id)
+    copy = await get_owned_card_copy(user_card_id)
+    if card is None or copy is None or copy.user_id != owner_user_id:
+        await callback.answer("Экземпляр уже недоступен", show_alert=True)
+        return
+    await edit_admin_message(
+        callback,
+        build_revoke_owned_card_confirm_text(card, copy),
+        reply_markup=build_admin_card_revoke_confirm_keyboard(card_id, owner_user_id, owners_page, user_card_id, copies_page),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_cards:revoke_do:"))
+async def admin_cards_revoke_do(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await answer_callback_admin_only(callback):
+        return
+    await state.clear()
+    parts = callback.data.split(":") if callback.data else []
+    if len(parts) < 7:
+        await callback.answer("Некорректный экземпляр", show_alert=True)
+        return
+    card_id = int(parts[2])
+    owner_user_id = int(parts[3])
+    owners_page = int(parts[4])
+    user_card_id = int(parts[5])
+    result = await revoke_owned_card_copy(user_card_id, admin_telegram_id=callback.from_user.id)
+    if not result.success:
+        await callback.answer(result.message, show_alert=True)
+        return
+
+    copies = await get_card_owner_copies_page(card_id, owner_user_id, page=1)
+    if copies is not None and copies.total_count > 0:
+        await edit_admin_message(
+            callback,
+            f"✅ <b>Карточка забрана</b>\n\n{build_card_owner_copies_text(copies)}",
+            reply_markup=build_admin_card_owner_copies_keyboard(copies, owners_page),
+        )
+    else:
+        owners = await get_card_owners_page(card_id, page=owners_page)
+        if owners is None:
+            await callback.answer("Карточка не найдена", show_alert=True)
+            return
+        await edit_admin_message(
+            callback,
+            f"✅ <b>Карточка забрана у {result.owner_nickname}</b>\n\n{build_card_owners_text(owners)}",
+            reply_markup=build_admin_card_owners_keyboard(owners),
+        )
+    await callback.answer("Карточка забрана")
 
 
 @router.callback_query(F.data == "admin_cards:collections")

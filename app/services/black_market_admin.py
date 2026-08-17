@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from app.database.db import get_connection
 from app.services.black_market_common import RARITIES, BlackMarketError, business_date
 from app.services.black_market_generation import RotationInfo, get_active_rotation
+from app.services.card_distribution_policy import is_admin_only_card
 from app.services.black_market_store import invalidate_user_cache
 
 DEFAULT_RARITY_WEIGHTS: dict[str, int] = {
@@ -242,6 +243,9 @@ async def create_pool_item(
 
     with get_connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        if item_type == "card" and card_id is not None and is_admin_only_card(connection, int(card_id)):
+            connection.rollback()
+            raise BlackMarketError("ADMIN_ONLY_COLLECTION", "Leaders выдаются только администрацией и недоступны в магазинах.")
         cursor = connection.execute(
             """
             INSERT INTO black_market_pool_items (
@@ -278,6 +282,9 @@ async def update_pool_item(admin_id: int, pool_item_id: int, **fields: object) -
             raise BlackMarketError("ITEM_NOT_FOUND", "Предмет пула не найден.")
 
         merged = {**dict(before_row), **updates}
+        if merged.get("item_type") == "card" and merged.get("card_id") is not None and is_admin_only_card(connection, int(merged["card_id"])):
+            connection.rollback()
+            raise BlackMarketError("ADMIN_ONLY_COLLECTION", "Leaders выдаются только администрацией и недоступны в магазинах.")
         _validate_price_fields(
             price_mode=merged["price_mode"],
             price_amount=int(merged["price_amount"]),

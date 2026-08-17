@@ -73,7 +73,10 @@ async def open_ranked_pack(user_id: int, pack_id: int) -> RankedPackOpeningResul
                     """
                     SELECT cards.id, cards.name FROM ranked_pack_cards
                     JOIN cards ON cards.id = ranked_pack_cards.card_id
+                    JOIN collections ON collections.id = cards.collection_id
                     WHERE ranked_pack_cards.pack_id = ? AND cards.active = 1
+                      AND LOWER(TRIM(collections.name)) != 'leaders'
+                      AND LOWER(TRIM(COALESCE(collections.code, ''))) != 'leaders'
                     ORDER BY RANDOM() LIMIT 1
                     """,
                     (pack_id,),

@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass
 
 from app.database.db import get_connection
+from app.services.card_distribution_policy import is_admin_only_card
 from app.services.rewards import grant_currency, grant_pack
 from app.services.stronghold_common import StrongholdError, get_active_event, parse_db_datetime, utc_now
 from app.services.stronghold_wallet import debit, get_balance
@@ -214,6 +215,8 @@ async def _purchase_impl(user_id: int, product_id: int, request_id: str) -> Purc
                 card_exists = connection.execute("SELECT 1 FROM cards WHERE id = ?", (item["card_id"],)).fetchone()
                 if card_exists is None:
                     raise StrongholdError("INVALID_PRODUCT_CONFIGURATION", "Некорректная карта в составе товара.")
+                if is_admin_only_card(connection, int(item["card_id"])):
+                    raise StrongholdError("ADMIN_ONLY_COLLECTION", "Leaders выдаются только администрацией и недоступны в магазинах.")
                 for _ in range(int(item.get("amount", 1))):
                     connection.execute(
                         "INSERT INTO user_cards (user_id, card_id, obtained_from, is_in_lineup, trade_locked) VALUES (?, ?, 'stronghold_store', 0, 0)",

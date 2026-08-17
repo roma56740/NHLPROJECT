@@ -131,6 +131,28 @@ def migrate_creator_tournaments(connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_creator_tournaments_invite_token ON creator_tournaments(invite_token)"
     )
 
+    # R11 recovery: до этого любой отказ play_player_match() превращался в
+    # ``failed / Составы не готовы``, хотя функция возвращает (None, None) также
+    # при занятом global match lock. Такие матчи становились тупиковыми в панели
+    # креатора. Возвращаем только строки со старой ТОЧНОЙ ошибкой в waiting;
+    # завершённые/отменённые матчи и любые другие ошибки не трогаем.
+    connection.execute(
+        """
+        UPDATE creator_tournament_matches
+        SET status = 'waiting',
+            player1_ready_at = NULL,
+            player2_ready_at = NULL,
+            started_at = NULL,
+            processing_token = NULL,
+            error_message = NULL,
+            last_activity_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE status IN ('failed', 'problem')
+          AND winner_user_id IS NULL
+          AND error_message = 'Составы не готовы к матчу.'
+        """
+    )
+
 
 def _log(c, tournament_id: int, actor: int | None, action: str, details: Any='') -> None:
     c.execute('INSERT INTO creator_tournament_logs(tournament_id,actor_user_id,action,details) VALUES(?,?,?,?)', (tournament_id,actor,action,json.dumps(details,ensure_ascii=False) if not isinstance(details,str) else details))
@@ -271,34 +293,142 @@ async def _mark_match_failed(match_id: int, error_message: str) -> None:
         c.commit()
 
 
+async def _tournament_lineup_problem(player1_user_id: int, player2_user_id: int) -> str | None:
+    """Проверяет оба обычных состава ДО перевода турнирного матча в playing.
+
+    Старый код узнавал о неполном составе только по ``(None, None)`` от
+    play_player_match(), но такой же результат возвращается при занятом match lock.
+    Из-за этого реальная причина терялась и матч ошибочно помечался зависшим.
+    """
+    from app.services.lineup import get_lineup_overview
+
+    with get_connection() as c:
+        rows = c.execute(
+            "SELECT id,nickname FROM users WHERE id IN (?,?)",
+            (player1_user_id, player2_user_id),
+        ).fetchall()
+    names = {int(row['id']): (row['nickname'] or f"Игрок {row['id']}") for row in rows}
+
+    problems: list[str] = []
+    for uid in (player1_user_id, player2_user_id):
+        overview = await get_lineup_overview(uid)
+        if not overview.is_complete or overview.average_overall is None:
+            problems.append(f"{names.get(uid, f'Игрок {uid}')} ({overview.filled_count}/{overview.total_slots})")
+    if not problems:
+        return None
+    return "Не готов состав: " + ", ".join(problems) + ". Заполните 3 FWD, 2 DEF и 1 G."
+
+
+async def _tournament_busy_problem(player1_user_id: int, player2_user_id: int) -> str | None:
+    """Возвращает понятную причину, если участник уже занят другим режимом."""
+    from app.services import match_guard
+
+    with get_connection() as c:
+        rows = c.execute(
+            "SELECT id,nickname FROM users WHERE id IN (?,?)",
+            (player1_user_id, player2_user_id),
+        ).fetchall()
+    names = {int(row['id']): (row['nickname'] or f"Игрок {row['id']}") for row in rows}
+
+    for uid in (player1_user_id, player2_user_id):
+        lock = await match_guard.get_active_match(uid)
+        if lock is None:
+            continue
+        label = match_guard.MATCH_TYPE_LABELS.get(lock.match_type, lock.match_type)
+        return f"{names.get(uid, f'Игрок {uid}')} сейчас занят в режиме «{label}». Завершите тот матч и повторите запуск турнира."
+    return None
+
+
+async def _return_match_to_waiting(match_id: int, message: str) -> None:
+    """Транзиентная проблема (занят другой матч) не должна превращать матч в failed."""
+    with get_connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        m = c.execute(
+            'SELECT tournament_id,status FROM creator_tournament_matches WHERE id=?',
+            (match_id,),
+        ).fetchone()
+        if not m or m['status'] == STATUS_COMPLETED:
+            c.rollback()
+            return
+        c.execute(
+            """
+            UPDATE creator_tournament_matches
+            SET status=?, started_at=NULL, processing_token=NULL, error_message=?,
+                last_activity_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (STATUS_WAITING, (message or '')[:500], match_id),
+        )
+        _log(c, int(m['tournament_id']), None, 'match_waiting_retry', {'match_id': match_id, 'reason': message})
+        c.commit()
+
+
 async def mark_ready_and_play(match_id:int,user_id:int)->tuple[bool,str,dict|None]:
     with get_connection() as c:
         c.execute('BEGIN IMMEDIATE')
         m=c.execute("SELECT * FROM creator_tournament_matches WHERE id=? AND status IN (?,?)",(match_id,*LEGACY_WAITING_STATUSES)).fetchone()
         if not m or user_id not in (m['player1_user_id'],m['player2_user_id']): c.rollback(); return False,'Матч недоступен.',None
         col='player1_ready_at' if user_id==m['player1_user_id'] else 'player2_ready_at'
-        c.execute(f'UPDATE creator_tournament_matches SET {col}=COALESCE({col},CURRENT_TIMESTAMP),status=?,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?',(STATUS_WAITING,match_id))
+        c.execute(f'UPDATE creator_tournament_matches SET {col}=COALESCE({col},CURRENT_TIMESTAMP),status=?,error_message=NULL,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?',(STATUS_WAITING,match_id))
         m=c.execute('SELECT * FROM creator_tournament_matches WHERE id=?',(match_id,)).fetchone()
         if not m['player1_ready_at'] or not m['player2_ready_at']:
             c.commit(); return True,'Ожидаем соперника...',None
-        changed=c.execute("UPDATE creator_tournament_matches SET status=?,started_at=CURRENT_TIMESTAMP,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status=?",(STATUS_PLAYING,match_id,STATUS_WAITING)).rowcount
+        p1=int(m['player1_user_id']); p2=int(m['player2_user_id'])
+        users=c.execute('SELECT id,telegram_id FROM users WHERE id IN (?,?)',(p1,p2)).fetchall()
+        c.commit()
+
+    # Важно: readiness игроков и готовность их обычных составов — разные вещи.
+    # Проверяем составы ДО status=playing, чтобы неполный ростер не создавал
+    # «зависший» матч, который потом должен чинить креатор.
+    lineup_problem = await _tournament_lineup_problem(p1, p2)
+    if lineup_problem:
+        await _return_match_to_waiting(match_id, lineup_problem)
+        return False, lineup_problem, None
+
+    # То же для глобального межрежимного lock: занятой Clan War/Ranked/обычный
+    # матч — это временное состояние, а не поломка турнирной сетки.
+    busy_problem = await _tournament_busy_problem(p1, p2)
+    if busy_problem:
+        await _return_match_to_waiting(match_id, busy_problem)
+        return False, busy_problem, None
+
+    with get_connection() as c:
+        c.execute('BEGIN IMMEDIATE')
+        changed=c.execute(
+            "UPDATE creator_tournament_matches SET status=?,started_at=CURRENT_TIMESTAMP,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP,attempt_count=attempt_count+1,error_message=NULL WHERE id=? AND status=?",
+            (STATUS_PLAYING,match_id,STATUS_WAITING),
+        ).rowcount
         if not changed: c.rollback(); return False,'Матч уже запускается.',None
-        users=c.execute('SELECT id,telegram_id FROM users WHERE id IN (?,?)',(m['player1_user_id'],m['player2_user_id'])).fetchall(); c.commit()
+        c.commit()
+
     tele={int(r['id']):int(r['telegram_id']) for r in users}
+    if p1 not in tele or p2 not in tele:
+        await _mark_match_failed(match_id, 'Не найден Telegram-профиль одного из участников.')
+        return False,'Не удалось запустить матч: профиль участника недоступен.',None
+
     from app.services.matches import play_player_match
     try:
-        r1,r2=await play_player_match(tele[int(m['player1_user_id'])],tele[int(m['player2_user_id'])],match_type='tournament')
+        r1,r2=await play_player_match(tele[p1],tele[p2],match_type='tournament')
     except Exception as error:
-        # Матч запущен (status='playing' уже закоммичен) — при сбое движка обязательно
-        # переводим в 'failed' с причиной, а не оставляем молча висеть навсегда.
         from app.services import error_log
         error_log.record_error('creator_tournaments.mark_ready_and_play', error, context=f'match_id={match_id}')
         await _mark_match_failed(match_id, str(error))
         return False,'Не удалось запустить матч. Создатель турнира уведомлён и может восстановить матч.',None
     if not r1 or not r2:
-        await _mark_match_failed(match_id, 'Составы не готовы к матчу.')
-        return False,'Не удалось запустить матч: проверьте составы.',None
-    winner=int(m['player1_user_id']) if r1.user_score>r1.opponent_score else int(m['player2_user_id'])
+        # Между preflight и acquire могла произойти гонка: участник успел начать
+        # другой матч. Это НЕ failed — возвращаем пару в waiting и позволяем
+        # повторить запуск после освобождения lock.
+        busy_problem = await _tournament_busy_problem(p1, p2)
+        if busy_problem:
+            await _return_match_to_waiting(match_id, busy_problem)
+            return False, busy_problem, None
+        lineup_problem = await _tournament_lineup_problem(p1, p2)
+        if lineup_problem:
+            await _return_match_to_waiting(match_id, lineup_problem)
+            return False, lineup_problem, None
+        await _mark_match_failed(match_id, 'Движок матча не вернул результат после успешной проверки составов и блокировок.')
+        return False,'Не удалось завершить симуляцию. Создатель турнира может перезапустить матч.',None
+    winner=p1 if r1.user_score>r1.opponent_score else p2
     await complete_match(match_id,winner,r1.user_score,r1.opponent_score,'played')
     return True,'Матч завершён.',{'score1':r1.user_score,'score2':r1.opponent_score,'winner_user_id':winner}
 
@@ -470,24 +600,47 @@ async def force_simulate_match(match_id:int,actor_user_id:int)->tuple[bool,str,d
         ok,_=await _check_creator(int(m['tournament_id']),actor_user_id)
         if not ok: return False,'Только создатель турнира может запустить симуляцию.',None
         if not m['player1_user_id'] or not m['player2_user_id']: return False,'Оба участника матча ещё не определены.',None
-        users=c.execute('SELECT id,telegram_id FROM users WHERE id IN (?,?)',(m['player1_user_id'],m['player2_user_id'])).fetchall()
+        p1=int(m['player1_user_id']); p2=int(m['player2_user_id'])
+        users=c.execute('SELECT id,telegram_id FROM users WHERE id IN (?,?)',(p1,p2)).fetchall()
+
+    lineup_problem = await _tournament_lineup_problem(p1, p2)
+    if lineup_problem:
+        await _return_match_to_waiting(match_id, lineup_problem)
+        return False, lineup_problem, None
+    busy_problem = await _tournament_busy_problem(p1, p2)
+    if busy_problem:
+        await _return_match_to_waiting(match_id, busy_problem)
+        return False, busy_problem, None
+
     with get_connection() as c:
         c.execute('BEGIN IMMEDIATE')
         changed=c.execute(
-            "UPDATE creator_tournament_matches SET status=?,started_at=CURRENT_TIMESTAMP,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP,attempt_count=attempt_count+1 WHERE id=? AND status!='completed'",
+            "UPDATE creator_tournament_matches SET status=?,started_at=CURRENT_TIMESTAMP,last_activity_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP,attempt_count=attempt_count+1,error_message=NULL WHERE id=? AND status!='completed'",
             (STATUS_PLAYING,match_id),
         ).rowcount
         c.commit()
     if not changed: return False,'Матч уже обрабатывается или завершён.',None
     tele={int(r['id']):int(r['telegram_id']) for r in users}
+    if p1 not in tele or p2 not in tele:
+        await _mark_match_failed(match_id,'Не найден Telegram-профиль одного из участников.')
+        return False,'Не удалось запустить симуляцию: профиль участника недоступен.',None
     from app.services.matches import play_player_match
     try:
-        r1,r2=await play_player_match(tele[int(m['player1_user_id'])],tele[int(m['player2_user_id'])],match_type='tournament')
+        r1,r2=await play_player_match(tele[p1],tele[p2],match_type='tournament')
     except Exception as error:
         await _mark_match_failed(match_id,str(error)); return False,'Не удалось запустить симуляцию.',None
     if not r1 or not r2:
-        await _mark_match_failed(match_id,'Составы не готовы к матчу.'); return False,'Не удалось запустить матч: проверьте составы.',None
-    winner=int(m['player1_user_id']) if r1.user_score>r1.opponent_score else int(m['player2_user_id'])
+        busy_problem = await _tournament_busy_problem(p1, p2)
+        if busy_problem:
+            await _return_match_to_waiting(match_id, busy_problem)
+            return False,busy_problem,None
+        lineup_problem = await _tournament_lineup_problem(p1, p2)
+        if lineup_problem:
+            await _return_match_to_waiting(match_id, lineup_problem)
+            return False,lineup_problem,None
+        await _mark_match_failed(match_id,'Движок матча не вернул результат после успешной проверки составов и блокировок.')
+        return False,'Не удалось завершить симуляцию.',None
+    winner=p1 if r1.user_score>r1.opponent_score else p2
     await complete_match(match_id,winner,r1.user_score,r1.opponent_score,'creator_simulation')
     with get_connection() as c:
         _log(c,int(m['tournament_id']),actor_user_id,'match_force_simulated',{'match_id':match_id}); c.commit()

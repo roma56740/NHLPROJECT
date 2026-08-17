@@ -45,7 +45,7 @@ def state_file() -> Path:
 # турниров. Полноценная таблица database_migrations с checksum (раздел 17 ТЗ) — Этап 3;
 # этого счётчика достаточно, чтобы не создавать predeploy backup на каждый restart с
 # неизменной схемой (требование раздела 13 ТЗ).
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 RETENTION: dict[str, int] = {"manual": 2, "daily": 1, "predeploy": 1}
 

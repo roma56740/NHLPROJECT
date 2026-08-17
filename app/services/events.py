@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from app.database.db import get_connection
+from app.services.card_distribution_policy import is_admin_only_card
 from app.services.users import get_player_profile_by_telegram_id
 
 
@@ -510,6 +511,9 @@ async def claim_event_reward(telegram_id: int, progress_id: int) -> EventClaimRe
             elif row["reward_type"] == "card":
                 if row["reward_card_id"] is None:
                     return EventClaimResult(False, "Карточка пока не выбрана.")
+                if is_admin_only_card(connection, int(row["reward_card_id"])):
+                    connection.rollback()
+                    return EventClaimResult(False, "Карты Leaders выдаются только администрацией.")
                 quantity = max(1, int(row["reward_amount"] or 1))
                 for _ in range(quantity):
                     connection.execute(
@@ -697,6 +701,8 @@ async def create_event(draft: EventDraft) -> AdminActionResult:
         return AdminActionResult(False, "Награда должна быть больше нуля.")
 
     with get_connection() as connection:
+        if draft.reward_type == "card" and draft.reward_card_id is not None and is_admin_only_card(connection, int(draft.reward_card_id)):
+            return AdminActionResult(False, "Leaders выдаются только администрацией и не могут быть наградой события.")
         cursor = connection.execute(
             """
             INSERT INTO events (
@@ -847,6 +853,8 @@ async def update_event_reward_card(event_id: int, card_id: int, amount: int) -> 
         card = connection.execute("SELECT id FROM cards WHERE id = ?", (card_id,)).fetchone()
         if card is None:
             return AdminActionResult(False, "Карточка не найдена.")
+        if is_admin_only_card(connection, card_id):
+            return AdminActionResult(False, "Leaders выдаются только администрацией и не могут быть наградой события.")
         connection.execute(
             """
             UPDATE events

@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable
 
 from app.database.db import get_connection
+from app.services.card_distribution_policy import is_admin_only_card
 from app.services.admin_permissions import (
     PERMISSION_ADMIN_PANEL,
     PERMISSION_BLACK_MARKET,
@@ -661,6 +662,11 @@ def _coerce_direct_types(connection: sqlite3.Connection, table: str, row: dict[s
     return result
 
 
+def _reject_admin_only_card(connection: sqlite3.Connection, card_id: int | None, context: str) -> None:
+    if card_id is not None and is_admin_only_card(connection, int(card_id)):
+        raise ValueError(f"Leaders выдаются только администрацией и не могут использоваться: {context}")
+
+
 def _prepare_row(connection: sqlite3.Connection, target: BulkTarget, row: dict[str, Any], *, assets_root: Path | None, commit_assets: bool, created_assets: list[Path] | None = None) -> dict[str, Any]:
     for required in target.required:
         if row.get(required) in (None, ""):
@@ -689,6 +695,7 @@ def _prepare_row(connection: sqlite3.Connection, target: BulkTarget, row: dict[s
     elif target.code == "pack_cards":
         row["pack_id"] = _pack_id(connection, row.get("pack_code"))
         row["card_id"] = _card_id(connection, row)
+        _reject_admin_only_card(connection, row["card_id"], "пулы обычных паков/магазина")
     elif target.code == "division_teams":
         found = connection.execute("SELECT id FROM team_divisions WHERE code = ? OR name = ? LIMIT 1", (str(row.get("division_code")), str(row.get("division_code")))).fetchone()
         if found is None:
@@ -696,28 +703,53 @@ def _prepare_row(connection: sqlite3.Connection, target: BulkTarget, row: dict[s
         row["division_id"] = int(found["id"])
     elif target.code == "starter_kit":
         row["card_id"] = _card_id(connection, row)
+        _reject_admin_only_card(connection, row["card_id"], "стартовый набор")
     elif target.code == "ranked_pack_slots":
         row["pack_id"] = _pack_id(connection, row.get("ranked_pack_code"), ranked=True)
         row["cosmetic_item_id"] = _cosmetic_id(connection, row.get("cosmetic_code"))
     elif target.code == "ranked_pack_cards":
         row["pack_id"] = _pack_id(connection, row.get("ranked_pack_code"), ranked=True)
         row["card_id"] = _card_id(connection, row)
+        _reject_admin_only_card(connection, row["card_id"], "Ranked-паки")
     elif target.code in {"ranked_pass_rewards", "hockey_pass_rewards"}:
         row["pack_id"] = _pack_id(connection, row.get("pack_code"))
         row["cosmetic_item_id"] = _cosmetic_id(connection, row.get("cosmetic_code")) if target.code == "ranked_pass_rewards" else None
         if row.get("card_id") not in (None, ""):
             row["card_id"] = _card_id(connection, row)
+            _reject_admin_only_card(connection, row["card_id"], f"награды {target.title}")
     elif target.code == "black_market_items":
         row["pack_id"] = _pack_id(connection, row.get("pack_code"))
         row["cosmetic_item_id"] = _cosmetic_id(connection, row.get("cosmetic_code"))
         if row.get("card_id") not in (None, ""):
             row["card_id"] = _card_id(connection, row)
+            _reject_admin_only_card(connection, row["card_id"], "Чёрный рынок")
     elif target.code == "stronghold_track":
         row["reward_pack_id"] = _pack_id(connection, row.get("pack_code"))
     elif target.code in {"reward_settings", "daily_login_rewards", "promo_codes", "season_rewards"}:
         row["pack_id"] = _pack_id(connection, row.get("pack_code"))
         if target.code == "reward_settings" and row.get("card_id") not in (None, ""):
             row["card_id"] = _card_id(connection, row)
+            _reject_admin_only_card(connection, row["card_id"], "системные награды")
+    elif target.code == "events":
+        if row.get("reward_card_id") not in (None, ""):
+            # events bulk uses the numeric reward_card_id directly.
+            row["reward_card_id"] = _int(row["reward_card_id"], "reward_card_id", minimum=1)
+            _reject_admin_only_card(connection, row["reward_card_id"], "награды событий")
+    elif target.code == "stronghold_upgrade_steps":
+        row["from_card_id"] = _int(row["from_card_id"], "from_card_id", minimum=1)
+        row["to_card_id"] = _int(row["to_card_id"], "to_card_id", minimum=1)
+        _reject_admin_only_card(connection, row["from_card_id"], "Stronghold Upgrade Chain")
+        _reject_admin_only_card(connection, row["to_card_id"], "Stronghold Upgrade Chain")
+    elif target.code == "stronghold_store":
+        try:
+            contents = json.loads(str(row.get("contents") or "[]"))
+        except json.JSONDecodeError as exc:
+            raise ValueError("contents должен быть корректным JSON") from exc
+        if not isinstance(contents, list):
+            raise ValueError("contents должен быть JSON-массивом")
+        for item in contents:
+            if isinstance(item, dict) and item.get("type") == "card" and item.get("card_id") not in (None, ""):
+                _reject_admin_only_card(connection, int(item["card_id"]), "магазин Stronghold")
 
     # ZIP-ассет копируется только на commit, при preview проверяется существование.
     asset_file = row.get("asset_file")

@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 
 from app.services.lineup import LINEUP_SLOT_ORDER, LineupCard, LineupOverview, get_slot_info
 from app.database.db import get_connection
+from app.services.bot_card_policy import BOT_BLOCKED_COLLECTION_CODE, BOT_BLOCKED_COLLECTION_NAME
 from app.services.user_cards import PlayerCardsPage, PlayerCardListItem
 from app.services.render_theme import get_render_theme_config, asset_absolute_path
 
@@ -580,10 +581,12 @@ def _bot_pool_rows_for_position(overall: int, position: str) -> list[Any]:
             FROM cards
             JOIN collections ON collections.id = cards.collection_id
             WHERE cards.active = 1 AND collections.active = 1
+              AND TRIM(collections.name) COLLATE NOCASE != ?
+              AND TRIM(COALESCE(collections.code, '')) COLLATE NOCASE != ?
               AND cards.overall = ? AND cards.position = ?
             ORDER BY RANDOM()
             """,
-            (int(overall), position),
+            (BOT_BLOCKED_COLLECTION_NAME, BOT_BLOCKED_COLLECTION_CODE, int(overall), position),
         ).fetchall()
     return list(rows)
 
@@ -597,9 +600,12 @@ def _all_bot_pool_rows(overall: int) -> list[Any]:
                    collections.name AS collection_name, collections.code AS collection_code
             FROM cards
             JOIN collections ON collections.id = cards.collection_id
-            WHERE cards.active = 1 AND collections.active = 1 AND cards.overall = ?
+            WHERE cards.active = 1 AND collections.active = 1
+              AND TRIM(collections.name) COLLATE NOCASE != ?
+              AND TRIM(COALESCE(collections.code, '')) COLLATE NOCASE != ?
+              AND cards.overall = ?
             ORDER BY RANDOM()
-            """, (int(overall),)
+            """, (BOT_BLOCKED_COLLECTION_NAME, BOT_BLOCKED_COLLECTION_CODE, int(overall))
         ).fetchall()
     return list(rows)
 

@@ -360,6 +360,8 @@ async def claim_free_card(user_id: int) -> tuple[FreeCardReward | None, FreeCard
             FROM cards
             JOIN collections ON collections.id = cards.collection_id
             WHERE cards.active = 1 AND collections.id IN ({placeholders})
+              AND LOWER(TRIM(collections.name)) != 'leaders'
+              AND LOWER(TRIM(COALESCE(collections.code, ''))) != 'leaders'
             ORDER BY RANDOM()
             LIMIT 1
             """,

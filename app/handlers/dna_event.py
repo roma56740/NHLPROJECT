@@ -5,21 +5,27 @@ import asyncio
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from app.keyboards.dna_event import (
-    build_dna_choice_keyboard, build_dna_extraction_keyboard, build_dna_main_keyboard,
-    build_dna_recipe_keyboard, build_dna_result_keyboard, build_dna_tier_keyboard,
+    build_dna_choice_keyboard, build_dna_extraction_keyboard, build_dna_extraction_selection_keyboard,
+    build_dna_main_keyboard, build_dna_recipe_keyboard, build_dna_result_keyboard, build_dna_tier_keyboard,
 )
 from app.services.dna_crafting import (
     DNA_STARTER_CHOICE_COST, DNA_TARGETS, DnaCraftError, claim_dna_welcome_collectible,
     craft_dna_card, craft_dna_choice_card, extract_dna_collectibles, get_dna_choice_page,
-    get_dna_craft_preview, get_dna_extraction_previews, get_dna_final_targets,
+    get_dna_craft_preview, get_dna_extraction_candidates, get_dna_extraction_previews, get_dna_final_targets,
     get_dna_inventory_progress,
 )
 from app.services.dna_render import render_dna_event_image
 
 router = Router()
+
+
+class DnaExtractionState(StatesGroup):
+    selecting = State()
 
 
 async def _replace_with_photo(callback: CallbackQuery, caption: str, reply_markup) -> None:
@@ -129,29 +135,172 @@ async def dna_progression(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "dna:extract")
-async def dna_extract_menu(callback: CallbackQuery) -> None:
+async def dna_extract_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
     try:
         items=await asyncio.to_thread(get_dna_extraction_previews, callback.from_user.id)
         progress=await asyncio.to_thread(get_dna_inventory_progress, callback.from_user.id)
-    except DnaCraftError as error: await callback.answer(error.message, show_alert=True); return
-    lines=["<b>⚗️ DNA EXTRACTION</b>", "", f"Баланс: <b>{progress.collectibles} 🧬</b>", "", "Перерабатывай обычные свободные карты в DNA Collectibles:"]
-    for item in items: lines.append(f"• {item.cards_required}× {item.ovr_label} OVR → <b>+{item.collectibles_reward} 🧬</b> · есть {item.available_cards}")
-    lines += ["", "DNA-карты автоматически исключены из Extraction."]
+    except DnaCraftError as error:
+        await callback.answer(error.message, show_alert=True); return
+    lines=[
+        "<b>⚗️ DNA EXTRACTION</b>", "", f"Баланс: <b>{progress.collectibles} 🧬</b>", "",
+        "Выбери рецепт, затем <b>сам выбери конкретные экземпляры карт</b>, которые хочешь сжечь:",
+    ]
+    for item in items:
+        lines.append(f"• {item.cards_required}× {item.ovr_label} OVR → <b>+{item.collectibles_reward} 🧬</b> · есть {item.available_cards}")
+    lines += ["", "DNA-карты автоматически исключены из Extraction.", "Карты в составе, обмене, с рамкой, Locked или Ranked Captain выбрать нельзя."]
     if isinstance(callback.message, Message):
         try:
             if callback.message.photo: await callback.message.edit_caption(caption="\n".join(lines), reply_markup=build_dna_extraction_keyboard(items))
             else: await callback.message.edit_text("\n".join(lines), reply_markup=build_dna_extraction_keyboard(items))
         except TelegramBadRequest: pass
-    await callback.answer()
+    try:
+        await callback.answer()
+    except TelegramBadRequest:
+        pass
+
+
+async def _show_extraction_selector(callback: CallbackQuery, state: FSMContext, page_number: int = 1) -> None:
+    data = await state.get_data()
+    recipe_code = str(data.get("dna_extraction_recipe") or "")
+    selected_ids = tuple(int(value) for value in data.get("dna_extraction_selected", []))
+    if not recipe_code:
+        await callback.answer("Выбор устарел. Открой DNA Extraction заново.", show_alert=True)
+        return
+    try:
+        page = await asyncio.to_thread(
+            get_dna_extraction_candidates, callback.from_user.id, recipe_code, page_number
+        )
+    except DnaCraftError as error:
+        await callback.answer(error.message, show_alert=True)
+        return
+
+    selected_count = len(selected_ids)
+    ready = selected_count == page.recipe.cards_required
+    status = "✅ Можно переработать" if ready else f"Выбери ещё {page.recipe.cards_required - selected_count}"
+    text = (
+        f"<b>⚗️ DNA EXTRACTION · {page.recipe.ovr_label} OVR</b>\n\n"
+        f"Нужно выбрать: <b>{page.recipe.cards_required}</b>\n"
+        f"Награда: <b>+{page.recipe.collectibles_reward} 🧬</b>\n"
+        f"Выбрано: <b>{selected_count}/{page.recipe.cards_required}</b>\n\n"
+        "Нажимай на <b>конкретные карты</b> ниже. Повторное нажатие снимает выбор.\n"
+        f"{status}\n\nСтраница {page.page}/{page.pages_count} · доступно карт: {page.total_count}"
+    )
+    if isinstance(callback.message, Message):
+        try:
+            markup = build_dna_extraction_selection_keyboard(page, selected_ids)
+            if callback.message.photo:
+                await callback.message.edit_caption(caption=text, reply_markup=markup)
+            else:
+                await callback.message.edit_text(text, reply_markup=markup)
+        except TelegramBadRequest:
+            pass
 
 
 @router.callback_query(F.data.startswith("dna:extract:"))
-async def dna_extract_do(callback: CallbackQuery) -> None:
+async def dna_extract_select_recipe(callback: CallbackQuery, state: FSMContext) -> None:
     code=(callback.data or "").split(":",2)[2]
-    try: result=await asyncio.to_thread(extract_dna_collectibles, callback.from_user.id, code)
-    except DnaCraftError as error: await callback.answer(error.message, show_alert=True); return
-    await callback.answer(f"+{result.recipe.collectibles_reward} DNA Collectible · баланс {result.collectible_balance}", show_alert=True)
-    await dna_extract_menu(callback)
+    try:
+        page = await asyncio.to_thread(get_dna_extraction_candidates, callback.from_user.id, code, 1)
+    except DnaCraftError as error:
+        await callback.answer(error.message, show_alert=True); return
+    if page.total_count < page.recipe.cards_required:
+        await callback.answer("Не хватает свободных карт для этого рецепта.", show_alert=True)
+        return
+    await state.set_state(DnaExtractionState.selecting)
+    await state.update_data(dna_extraction_recipe=code, dna_extraction_selected=[])
+    await _show_extraction_selector(callback, state, 1)
+    await callback.answer("Выбери конкретные карты")
+
+
+@router.callback_query(F.data.startswith("dna:expage:"))
+async def dna_extract_page(callback: CallbackQuery, state: FSMContext) -> None:
+    raw=(callback.data or "").split(":")
+    page=int(raw[2]) if len(raw) > 2 and raw[2].isdigit() else 1
+    await _show_extraction_selector(callback, state, page)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("dna:extoggle:"))
+async def dna_extract_toggle(callback: CallbackQuery, state: FSMContext) -> None:
+    raw=(callback.data or "").split(":")
+    if len(raw) < 4 or not raw[2].isdigit():
+        await callback.answer("Некорректная карта.", show_alert=True); return
+    user_card_id=int(raw[2])
+    page=int(raw[3]) if raw[3].isdigit() else 1
+    data=await state.get_data()
+    recipe_code=str(data.get("dna_extraction_recipe") or "")
+    selected=[int(value) for value in data.get("dna_extraction_selected", [])]
+    if not recipe_code:
+        await callback.answer("Выбор устарел. Открой Extraction заново.", show_alert=True); return
+    try:
+        current_page=await asyncio.to_thread(get_dna_extraction_candidates, callback.from_user.id, recipe_code, page)
+    except DnaCraftError as error:
+        await callback.answer(error.message, show_alert=True); return
+    visible_ids={card.user_card_id for card in current_page.items}
+    if user_card_id not in visible_ids:
+        await callback.answer("Эта карта больше недоступна.", show_alert=True); return
+    if user_card_id in selected:
+        selected.remove(user_card_id)
+    else:
+        if len(selected) >= current_page.recipe.cards_required:
+            await callback.answer(f"Можно выбрать только {current_page.recipe.cards_required} карт(ы). Сними одну из выбранных.", show_alert=True)
+            return
+        selected.append(user_card_id)
+    await state.update_data(dna_extraction_selected=selected)
+    await _show_extraction_selector(callback, state, page)
+    await callback.answer(f"Выбрано {len(selected)}/{current_page.recipe.cards_required}")
+
+
+@router.callback_query(F.data == "dna:exreset")
+async def dna_extract_reset(callback: CallbackQuery, state: FSMContext) -> None:
+    data=await state.get_data()
+    if not data.get("dna_extraction_recipe"):
+        await callback.answer("Выбор уже сброшен."); return
+    await state.update_data(dna_extraction_selected=[])
+    await _show_extraction_selector(callback, state, 1)
+    await callback.answer("Выбор сброшен")
+
+
+@router.callback_query(F.data == "dna:exconfirm")
+async def dna_extract_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    data=await state.get_data()
+    recipe_code=str(data.get("dna_extraction_recipe") or "")
+    selected_ids=tuple(int(value) for value in data.get("dna_extraction_selected", []))
+    if not recipe_code:
+        await callback.answer("Выбор устарел. Открой Extraction заново.", show_alert=True); return
+    try:
+        result=await asyncio.to_thread(
+            extract_dna_collectibles, callback.from_user.id, recipe_code, selected_ids
+        )
+    except DnaCraftError as error:
+        await callback.answer(error.message, show_alert=True)
+        await state.update_data(dna_extraction_selected=[])
+        await _show_extraction_selector(callback, state, 1)
+        return
+    except Exception:
+        await callback.answer("Переработка не завершена. Карты не списаны.", show_alert=True)
+        return
+
+    await state.clear()
+    consumed="\n".join(f"• {escape(label)}" for label in result.consumed_labels)
+    text=(
+        f"<b>✅ DNA EXTRACTION COMPLETE</b>\n\n"
+        f"Получено: <b>+{result.recipe.collectibles_reward} 🧬 DNA Collectible</b>\n"
+        f"Баланс: <b>{result.collectible_balance} 🧬</b>\n\n"
+        f"<b>Переработаны именно выбранные карты:</b>\n{consumed}"
+    )
+    try:
+        items=await asyncio.to_thread(get_dna_extraction_previews, callback.from_user.id)
+        markup=build_dna_extraction_keyboard(items)
+        if isinstance(callback.message, Message):
+            if callback.message.photo:
+                await callback.message.edit_caption(caption=text, reply_markup=markup)
+            else:
+                await callback.message.edit_text(text, reply_markup=markup)
+    except TelegramBadRequest:
+        pass
+    await callback.answer(f"+{result.recipe.collectibles_reward} 🧬")
 
 
 @router.callback_query(F.data.startswith("dna:choice:"))

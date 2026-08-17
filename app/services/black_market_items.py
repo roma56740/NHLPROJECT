@@ -26,6 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.services.black_market_common import BlackMarketError
+from app.services.card_distribution_policy import is_admin_only_card
 from app.services.rewards import grant_currency, grant_pack
 
 logger = logging.getLogger(__name__)
@@ -100,8 +101,8 @@ def _grant_card_item(connection: sqlite3.Connection, user_id: int, item_row: sql
     if reference_id is None:
         raise BlackMarketError("INVALID_ITEM_CONFIGURATION", "Карта больше недоступна.")
     card_exists = connection.execute("SELECT 1 FROM cards WHERE id = ? AND active = 1", (reference_id,)).fetchone()
-    if card_exists is None:
-        raise BlackMarketError("INVALID_ITEM_CONFIGURATION", "Карта больше недоступна.")
+    if card_exists is None or is_admin_only_card(connection, int(reference_id)):
+        raise BlackMarketError("INVALID_ITEM_CONFIGURATION", "Эта карта доступна только для выдачи администрацией.")
     connection.execute(
         "INSERT INTO user_cards (user_id, card_id, obtained_from, is_in_lineup, trade_locked) VALUES (?, ?, 'black_market', 0, 0)",
         (user_id, reference_id),

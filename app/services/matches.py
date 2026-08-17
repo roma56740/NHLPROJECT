@@ -1088,11 +1088,14 @@ async def play_player_match(
             second_player_name=second_profile.nickname,
         )
 
+        apply_normal_progression = match_type != "tournament"
+        opponent_type = "tournament" if match_type == "tournament" else "player"
+
         first_result = await save_match_result(
             profile=first_profile,
             opponent_user_id=second_profile.id,
             opponent_name=second_profile.nickname,
-            opponent_type="player",
+            opponent_type=opponent_type,
             user_ovr=first_ovr,
             opponent_ovr=second_ovr,
             user_score=first_score,
@@ -1102,12 +1105,13 @@ async def play_player_match(
             periods=periods,
             events=events,
             mvp_title=first_mvp,
+            apply_normal_progression=apply_normal_progression,
         )
         second_result = await save_match_result(
             profile=second_profile,
             opponent_user_id=first_profile.id,
             opponent_name=first_profile.nickname,
-            opponent_type="player",
+            opponent_type=opponent_type,
             user_ovr=second_ovr,
             opponent_ovr=first_ovr,
             user_score=second_score,
@@ -1117,6 +1121,7 @@ async def play_player_match(
             periods=mirror_periods(periods),
             events=second_events,
             mvp_title=second_mvp,
+            apply_normal_progression=apply_normal_progression,
         )
     except Exception:
         await match_guard.release_two_player_match_lock(lock, reason="PVP_MATCH_ERROR")

@@ -585,3 +585,351 @@ async def get_collections() -> list[CollectionItem]:
         )
         for row in rows
     ]
+
+
+@dataclass(frozen=True)
+class CardOwnerSummary:
+    user_id: int
+    telegram_id: int
+    username: str | None
+    nickname: str
+    quantity: int
+
+
+@dataclass(frozen=True)
+class CardOwnersPage:
+    card_id: int
+    card_name: str
+    card_overall: int
+    owners: list[CardOwnerSummary]
+    page: int
+    pages_count: int
+    total_owners: int
+    total_copies: int
+
+
+@dataclass(frozen=True)
+class CardOwnerCopy:
+    user_card_id: int
+    user_id: int
+    telegram_id: int
+    username: str | None
+    nickname: str
+    is_in_lineup: bool
+    lineup_slot: str | None
+    trade_locked: bool
+    lock_reason: str | None
+    obtained_from: str
+    has_frame: bool
+    is_ranked_captain: bool
+    in_open_trade: bool
+    created_at: str
+
+
+@dataclass(frozen=True)
+class CardOwnerCopiesPage:
+    card_id: int
+    card_name: str
+    card_overall: int
+    owner_user_id: int
+    owner_telegram_id: int
+    owner_username: str | None
+    owner_nickname: str
+    copies: list[CardOwnerCopy]
+    page: int
+    pages_count: int
+    total_count: int
+
+
+@dataclass(frozen=True)
+class RevokeOwnedCardResult:
+    success: bool
+    message: str
+    card_id: int | None = None
+    card_name: str | None = None
+    user_card_id: int | None = None
+    owner_user_id: int | None = None
+    owner_telegram_id: int | None = None
+    owner_nickname: str | None = None
+
+
+async def get_card_owners_page(card_id: int, page: int = 1, per_page: int = 6) -> CardOwnersPage | None:
+    with get_connection() as connection:
+        card = connection.execute(
+            "SELECT id, name, overall FROM cards WHERE id = ?", (card_id,)
+        ).fetchone()
+        if card is None:
+            return None
+
+        totals = connection.execute(
+            """
+            SELECT COUNT(DISTINCT user_id) AS owners_count, COUNT(*) AS copies_count
+            FROM user_cards
+            WHERE card_id = ?
+            """,
+            (card_id,),
+        ).fetchone()
+        total_owners = int(totals["owners_count"] or 0)
+        total_copies = int(totals["copies_count"] or 0)
+        pages_count = max(1, ceil(total_owners / per_page))
+        safe_page = min(max(int(page), 1), pages_count)
+        offset = (safe_page - 1) * per_page
+
+        rows = connection.execute(
+            """
+            SELECT
+                users.id AS user_id,
+                users.telegram_id,
+                users.username,
+                users.nickname,
+                COUNT(user_cards.id) AS quantity
+            FROM user_cards
+            JOIN users ON users.id = user_cards.user_id
+            WHERE user_cards.card_id = ?
+            GROUP BY users.id
+            ORDER BY quantity DESC, users.nickname COLLATE NOCASE, users.id
+            LIMIT ? OFFSET ?
+            """,
+            (card_id, per_page, offset),
+        ).fetchall()
+
+    return CardOwnersPage(
+        card_id=int(card["id"]),
+        card_name=str(card["name"]),
+        card_overall=int(card["overall"]),
+        owners=[
+            CardOwnerSummary(
+                user_id=int(row["user_id"]),
+                telegram_id=int(row["telegram_id"]),
+                username=row["username"],
+                nickname=str(row["nickname"]),
+                quantity=int(row["quantity"]),
+            )
+            for row in rows
+        ],
+        page=safe_page,
+        pages_count=pages_count,
+        total_owners=total_owners,
+        total_copies=total_copies,
+    )
+
+
+async def get_card_owner_copies_page(
+    card_id: int,
+    owner_user_id: int,
+    page: int = 1,
+    per_page: int = 6,
+) -> CardOwnerCopiesPage | None:
+    with get_connection() as connection:
+        header = connection.execute(
+            """
+            SELECT cards.id AS card_id, cards.name AS card_name, cards.overall,
+                   users.id AS user_id, users.telegram_id, users.username, users.nickname
+            FROM cards CROSS JOIN users
+            WHERE cards.id = ? AND users.id = ?
+            """,
+            (card_id, owner_user_id),
+        ).fetchone()
+        if header is None:
+            return None
+
+        total_count = int(
+            connection.execute(
+                "SELECT COUNT(*) AS n FROM user_cards WHERE card_id = ? AND user_id = ?",
+                (card_id, owner_user_id),
+            ).fetchone()["n"]
+        )
+        pages_count = max(1, ceil(total_count / per_page))
+        safe_page = min(max(int(page), 1), pages_count)
+        offset = (safe_page - 1) * per_page
+
+        rows = connection.execute(
+            """
+            SELECT
+                uc.id AS user_card_id,
+                uc.user_id,
+                u.telegram_id,
+                u.username,
+                u.nickname,
+                uc.is_in_lineup,
+                uc.lineup_slot,
+                uc.trade_locked,
+                uc.lock_reason,
+                uc.obtained_from,
+                uc.created_at,
+                CASE WHEN ucf.id IS NOT NULL THEN 1 ELSE 0 END AS has_frame,
+                CASE WHEN rc.id IS NOT NULL THEN 1 ELSE 0 END AS is_ranked_captain,
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM trade_offer_cards toc
+                    JOIN trade_offers t ON t.id = toc.offer_id
+                    WHERE toc.user_card_id = uc.id AND t.status = 'open'
+                ) THEN 1 ELSE 0 END AS in_open_trade
+            FROM user_cards uc
+            JOIN users u ON u.id = uc.user_id
+            LEFT JOIN user_card_frames ucf ON ucf.user_card_id = uc.id
+            LEFT JOIN ranked_captains rc ON rc.user_card_id = uc.id
+            WHERE uc.card_id = ? AND uc.user_id = ?
+            ORDER BY uc.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (card_id, owner_user_id, per_page, offset),
+        ).fetchall()
+
+    copies = [
+        CardOwnerCopy(
+            user_card_id=int(row["user_card_id"]),
+            user_id=int(row["user_id"]),
+            telegram_id=int(row["telegram_id"]),
+            username=row["username"],
+            nickname=str(row["nickname"]),
+            is_in_lineup=bool(row["is_in_lineup"]),
+            lineup_slot=row["lineup_slot"],
+            trade_locked=bool(row["trade_locked"]),
+            lock_reason=row["lock_reason"],
+            obtained_from=str(row["obtained_from"]),
+            has_frame=bool(row["has_frame"]),
+            is_ranked_captain=bool(row["is_ranked_captain"]),
+            in_open_trade=bool(row["in_open_trade"]),
+            created_at=str(row["created_at"]),
+        )
+        for row in rows
+    ]
+
+    return CardOwnerCopiesPage(
+        card_id=int(header["card_id"]),
+        card_name=str(header["card_name"]),
+        card_overall=int(header["overall"]),
+        owner_user_id=int(header["user_id"]),
+        owner_telegram_id=int(header["telegram_id"]),
+        owner_username=header["username"],
+        owner_nickname=str(header["nickname"]),
+        copies=copies,
+        page=safe_page,
+        pages_count=pages_count,
+        total_count=total_count,
+    )
+
+
+async def get_owned_card_copy(user_card_id: int) -> CardOwnerCopy | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT
+                uc.id AS user_card_id,
+                uc.user_id,
+                u.telegram_id,
+                u.username,
+                u.nickname,
+                uc.is_in_lineup,
+                uc.lineup_slot,
+                uc.trade_locked,
+                uc.lock_reason,
+                uc.obtained_from,
+                uc.created_at,
+                CASE WHEN ucf.id IS NOT NULL THEN 1 ELSE 0 END AS has_frame,
+                CASE WHEN rc.id IS NOT NULL THEN 1 ELSE 0 END AS is_ranked_captain,
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM trade_offer_cards toc
+                    JOIN trade_offers t ON t.id = toc.offer_id
+                    WHERE toc.user_card_id = uc.id AND t.status = 'open'
+                ) THEN 1 ELSE 0 END AS in_open_trade
+            FROM user_cards uc
+            JOIN users u ON u.id = uc.user_id
+            LEFT JOIN user_card_frames ucf ON ucf.user_card_id = uc.id
+            LEFT JOIN ranked_captains rc ON rc.user_card_id = uc.id
+            WHERE uc.id = ?
+            """,
+            (user_card_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return CardOwnerCopy(
+        user_card_id=int(row["user_card_id"]), user_id=int(row["user_id"]), telegram_id=int(row["telegram_id"]),
+        username=row["username"], nickname=str(row["nickname"]), is_in_lineup=bool(row["is_in_lineup"]),
+        lineup_slot=row["lineup_slot"], trade_locked=bool(row["trade_locked"]), lock_reason=row["lock_reason"],
+        obtained_from=str(row["obtained_from"]), has_frame=bool(row["has_frame"]),
+        is_ranked_captain=bool(row["is_ranked_captain"]), in_open_trade=bool(row["in_open_trade"]),
+        created_at=str(row["created_at"]),
+    )
+
+
+async def revoke_owned_card_copy(user_card_id: int, *, admin_telegram_id: int) -> RevokeOwnedCardResult:
+    """Remove one exact owned copy, with admin override semantics.
+
+    Any open trade that contains the exact instance is cancelled first.  A bound
+    frame is not destroyed: deleting user_card_frames via FK simply returns that
+    cosmetic copy to the owner's inventory.  Ranked captain binding is removed by
+    FK cascade as well.
+    """
+    from app.services.audit_log import record
+
+    with get_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """
+            SELECT uc.id AS user_card_id, uc.card_id, uc.user_id,
+                   c.name AS card_name, u.telegram_id, u.nickname
+            FROM user_cards uc
+            JOIN cards c ON c.id = uc.card_id
+            JOIN users u ON u.id = uc.user_id
+            WHERE uc.id = ?
+            """,
+            (user_card_id,),
+        ).fetchone()
+        if row is None:
+            connection.rollback()
+            return RevokeOwnedCardResult(False, "Экземпляр уже отсутствует.")
+
+        # Cancel affected open offers before the FK cascade removes the offer-card row.
+        offer_rows = connection.execute(
+            """
+            SELECT DISTINCT t.id
+            FROM trade_offer_cards toc
+            JOIN trade_offers t ON t.id = toc.offer_id
+            WHERE toc.user_card_id = ? AND t.status = 'open'
+            """,
+            (user_card_id,),
+        ).fetchall()
+        offer_ids = [int(item["id"]) for item in offer_rows]
+        if offer_ids:
+            placeholders = ",".join("?" for _ in offer_ids)
+            connection.execute(
+                f"UPDATE trade_offers SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+                offer_ids,
+            )
+
+        # Avoid leaving a broken available creator-bank row pointing to NULL.
+        connection.execute(
+            "UPDATE creator_bank_items SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE user_card_id = ? AND status = 'available'",
+            (user_card_id,),
+        )
+
+        connection.execute("DELETE FROM user_cards WHERE id = ?", (user_card_id,))
+        record(
+            connection,
+            admin_telegram_id,
+            "admin_revoke_user_card",
+            "user_card",
+            int(user_card_id),
+            {
+                "card_id": int(row["card_id"]),
+                "card_name": str(row["card_name"]),
+                "owner_user_id": int(row["user_id"]),
+                "owner_telegram_id": int(row["telegram_id"]),
+                "owner_nickname": str(row["nickname"]),
+                "cancelled_trade_offer_ids": offer_ids,
+            },
+        )
+        connection.commit()
+
+    return RevokeOwnedCardResult(
+        True,
+        "Карточка забрана у владельца.",
+        card_id=int(row["card_id"]),
+        card_name=str(row["card_name"]),
+        user_card_id=int(row["user_card_id"]),
+        owner_user_id=int(row["user_id"]),
+        owner_telegram_id=int(row["telegram_id"]),
+        owner_nickname=str(row["nickname"]),
+    )

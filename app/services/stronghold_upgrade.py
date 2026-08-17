@@ -11,6 +11,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from app.database.db import get_connection
+from app.services.card_distribution_policy import is_admin_only_card
 from app.services.match_guard import has_active_match
 from app.services.salary import STRONGHOLD_SALARY_CAP
 from app.services.stronghold_common import (
@@ -163,6 +164,9 @@ async def ensure_starter_card(user_id: int) -> None:
         if first_step is None:
             connection.rollback()
             return
+        if is_admin_only_card(connection, int(first_step["from_card_id"])):
+            connection.rollback()
+            return
 
         chain_card_ids = [
             int(row["from_card_id"]) for row in connection.execute(
@@ -294,6 +298,8 @@ async def _confirm_upgrade_impl(user_id: int, user_card_id: int, request_id: str
             )
 
         state, card_row, step_row, to_card_row = _load_event_and_card(connection, user_id, user_card_id)
+        if is_admin_only_card(connection, int(to_card_row["id"])):
+            raise StrongholdError("ADMIN_ONLY_COLLECTION", "Leaders выдаются только администрацией.")
 
         if state.status in ("DRAFT", "SCHEDULED"):
             raise StrongholdError("EVENT_NOT_ACTIVE", "Событие THE STRONGHOLD ещё не началось.")

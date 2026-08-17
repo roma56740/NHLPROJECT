@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from app.database.db import get_connection
+from app.services.card_distribution_policy import is_admin_only_card
 
 
 DNA_COLLECTION_CODE = "dna"
@@ -128,6 +129,26 @@ class DnaExtractionResult:
     recipe: DnaExtractionPreview
     consumed_labels: tuple[str, ...]
     collectible_balance: int
+
+
+@dataclass(frozen=True)
+class DnaExtractionCandidate:
+    user_card_id: int
+    card_id: int
+    name: str
+    overall: int
+    position: str
+    team: str
+    collection_name: str
+
+
+@dataclass(frozen=True)
+class DnaExtractionCandidatePage:
+    recipe: DnaExtractionPreview
+    items: tuple[DnaExtractionCandidate, ...]
+    page: int
+    pages_count: int
+    total_count: int
 
 
 @dataclass(frozen=True)
@@ -571,27 +592,125 @@ def get_dna_extraction_previews(telegram_id: int) -> tuple[DnaExtractionPreview,
         return tuple(result)
 
 
-def extract_dna_collectibles(telegram_id: int, recipe_code: str) -> DnaExtractionResult:
+def get_dna_extraction_candidates(
+    telegram_id: int, recipe_code: str, page: int = 1, page_size: int = 8
+) -> DnaExtractionCandidatePage:
     config = DNA_EXTRACTION_RECIPES.get(recipe_code)
     if config is None:
         raise DnaCraftError("BAD_EXTRACTION", "Неизвестный рецепт переработки.")
     min_ovr, max_ovr, required, reward = config
+    page = max(1, int(page))
+    page_size = max(1, min(20, int(page_size)))
+
+    with get_connection() as connection:
+        user_id = _resolve_user_id(connection, telegram_id)
+        extra_where = f"cards.overall BETWEEN ? AND ? AND NOT ({_collection_is_dna_sql()})"
+        total = _count_eligible(connection, user_id, extra_where, (min_ovr, max_ovr))
+        pages = max(1, math.ceil(total / page_size))
+        page = min(page, pages)
+        rows = connection.execute(
+            f"""
+            SELECT user_cards.id AS user_card_id, cards.id AS card_id, cards.name, cards.overall,
+                   cards.position, cards.team, collections.name AS collection_name
+            FROM user_cards
+            JOIN cards ON cards.id = user_cards.card_id
+            JOIN collections ON collections.id = cards.collection_id
+            WHERE {_eligible_base_where()} AND ({extra_where})
+            ORDER BY cards.overall DESC, cards.name ASC, collections.name ASC, user_cards.id ASC
+            LIMIT ? OFFSET ?
+            """,
+            (user_id, min_ovr, max_ovr, page_size, (page - 1) * page_size),
+        ).fetchall()
+        items = tuple(
+            DnaExtractionCandidate(
+                user_card_id=int(row["user_card_id"]),
+                card_id=int(row["card_id"]),
+                name=str(row["name"]),
+                overall=int(row["overall"]),
+                position=str(row["position"] or ""),
+                team=str(row["team"] or ""),
+                collection_name=str(row["collection_name"] or ""),
+            )
+            for row in rows
+        )
+        recipe = DnaExtractionPreview(recipe_code, min_ovr, max_ovr, required, reward, total)
+        return DnaExtractionCandidatePage(recipe, items, page, pages, total)
+
+
+def extract_dna_collectibles(
+    telegram_id: int, recipe_code: str, user_card_ids: Iterable[int] | None = None
+) -> DnaExtractionResult:
+    config = DNA_EXTRACTION_RECIPES.get(recipe_code)
+    if config is None:
+        raise DnaCraftError("BAD_EXTRACTION", "Неизвестный рецепт переработки.")
+    min_ovr, max_ovr, required, reward = config
+
+    requested_ids: tuple[int, ...] | None = None
+    if user_card_ids is not None:
+        requested_ids = tuple(int(value) for value in user_card_ids)
+        if len(requested_ids) != required or len(set(requested_ids)) != required:
+            raise DnaCraftError(
+                "BAD_EXTRACTION_SELECTION",
+                f"Нужно выбрать ровно {required} {'карту' if required == 1 else 'карты'} для переработки.",
+            )
+
     with get_connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         try:
             user_id = _resolve_user_id(connection, telegram_id)
             item_id = _ensure_dna_collectible(connection)
-            selected = _select_cards(
-                connection, user_id,
-                f"cards.overall BETWEEN ? AND ? AND NOT ({_collection_is_dna_sql()})",
-                required, (min_ovr, max_ovr),
-            )
+            extra_where = f"cards.overall BETWEEN ? AND ? AND NOT ({_collection_is_dna_sql()})"
+
+            if requested_ids is None:
+                selected = _select_cards(
+                    connection, user_id, extra_where, required, (min_ovr, max_ovr),
+                )
+            else:
+                placeholders = ",".join("?" for _ in requested_ids)
+                selected = list(connection.execute(
+                    f"""
+                    SELECT user_cards.id AS user_card_id, cards.id AS card_id, cards.name, cards.overall,
+                           cards.position, cards.team, collections.name AS collection_name
+                    FROM user_cards
+                    JOIN cards ON cards.id = user_cards.card_id
+                    JOIN collections ON collections.id = cards.collection_id
+                    WHERE {_eligible_base_where()} AND ({extra_where})
+                      AND user_cards.id IN ({placeholders})
+                    ORDER BY user_cards.id ASC
+                    """,
+                    (user_id, min_ovr, max_ovr, *requested_ids),
+                ).fetchall())
+
             if len(selected) != required:
+                if requested_ids is not None:
+                    raise DnaCraftError(
+                        "EXTRACTION_SELECTION_CHANGED",
+                        "Одна из выбранных карт уже недоступна: она могла попасть в состав, обмен или быть использована. Выбери карты заново.",
+                    )
                 raise DnaCraftError("NOT_ENOUGH", "Не хватает свободных карт для переработки.")
-            ids = tuple(int(r["user_card_id"]) for r in selected)
-            labels = tuple(f"{r['name']} {int(r['overall'])}" for r in selected)
+
+            selected_by_id = {int(row["user_card_id"]): row for row in selected}
+            if requested_ids is not None and set(selected_by_id) != set(requested_ids):
+                raise DnaCraftError(
+                    "EXTRACTION_SELECTION_CHANGED",
+                    "Одна из выбранных карт больше недоступна. Выбери карты заново.",
+                )
+
+            ordered = (
+                [selected_by_id[value] for value in requested_ids]
+                if requested_ids is not None
+                else selected
+            )
+            ids = tuple(int(row["user_card_id"]) for row in ordered)
+            labels = tuple(
+                f"{row['name']} {int(row['overall'])} · {row['collection_name']} · #{int(row['user_card_id'])}"
+                for row in ordered
+            )
             placeholders = ",".join("?" for _ in ids)
-            connection.execute(f"DELETE FROM user_cards WHERE user_id = ? AND id IN ({placeholders})", (user_id, *ids))
+            connection.execute(
+                f"DELETE FROM user_cards WHERE user_id = ? AND id IN ({placeholders})",
+                (user_id, *ids),
+            )
             balance = _change_item_quantity(connection, user_id, item_id, reward)
             connection.execute(
                 "INSERT INTO dna_extraction_logs (user_id, recipe_code, collectible_amount, consumed_user_card_ids_json) VALUES (?, ?, ?, ?)",
@@ -611,7 +730,7 @@ def get_dna_choice_page(telegram_id: int, page: int = 1, page_size: int = 8) -> 
     with get_connection() as connection:
         user_id = _resolve_user_id(connection, telegram_id)
         item_id = _ensure_dna_collectible(connection)
-        where = f"cards.active = 1 AND cards.overall BETWEEN 95 AND 96 AND collections.active = 1 AND COALESCE(collections.is_exclusive, 0) = 0 AND NOT ({_collection_is_dna_sql()})"
+        where = f"cards.active = 1 AND cards.overall BETWEEN 95 AND 96 AND collections.active = 1 AND COALESCE(collections.is_exclusive, 0) = 0 AND LOWER(TRIM(collections.name)) != 'leaders' AND LOWER(TRIM(COALESCE(collections.code, ''))) != 'leaders' AND NOT ({_collection_is_dna_sql()})"
         total = int(connection.execute(
             f"SELECT COUNT(*) AS n FROM cards JOIN collections ON collections.id = cards.collection_id WHERE {where}"
         ).fetchone()["n"] or 0)
@@ -644,12 +763,14 @@ def craft_dna_choice_card(telegram_id: int, card_id: int) -> DnaChoiceResult:
                 FROM cards JOIN collections ON collections.id = cards.collection_id
                 WHERE cards.id = ? AND cards.active = 1 AND cards.overall BETWEEN 95 AND 96
                   AND collections.active = 1 AND COALESCE(collections.is_exclusive, 0) = 0
+                  AND LOWER(TRIM(collections.name)) != 'leaders'
+                  AND LOWER(TRIM(COALESCE(collections.code, ''))) != 'leaders'
                   AND NOT ({_collection_is_dna_sql()})
                 LIMIT 1
                 """,
                 (card_id,),
             ).fetchone()
-            if row is None:
+            if row is None or is_admin_only_card(connection, card_id):
                 raise DnaCraftError("BAD_CHOICE", "Эта карта не входит в 95–96 Choice Craft.")
             balance = _change_item_quantity(connection, user_id, item_id, -DNA_STARTER_CHOICE_COST)
             cursor = connection.execute(

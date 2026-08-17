@@ -13,6 +13,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from app.database.db import get_connection
+from app.services.card_distribution_policy import is_admin_only_card
 
 
 def _audit(connection: sqlite3.Connection, *, event_id: int, admin_id: int, action: str, entity: str, entity_id: int, before: dict, after: dict, reason: str = "admin_edit") -> None:
@@ -493,6 +494,10 @@ def validate_product_contents(contents: list[dict]) -> list[str]:
         elif item_type == "card":
             if not item.get("card_id"):
                 errors.append(f"Элемент {index + 1}: не указан card_id.")
+            else:
+                with get_connection() as connection:
+                    if is_admin_only_card(connection, int(item["card_id"])):
+                        errors.append(f"Элемент {index + 1}: Leaders выдаются только администрацией и не могут быть товаром магазина.")
         elif item_type == "pack":
             if not item.get("pack_id"):
                 errors.append(f"Элемент {index + 1}: не указан pack_id.")
