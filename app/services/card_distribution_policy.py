@@ -22,6 +22,16 @@ def is_admin_only_collection(*, name: object | None = None, code: object | None 
     return _norm(name) in ADMIN_ONLY_COLLECTION_NAMES or _norm(code) in ADMIN_ONLY_COLLECTION_CODES
 
 
+
+
+def is_admin_only_collection_id(connection: sqlite3.Connection, collection_id: int | None) -> bool:
+    if collection_id is None:
+        return False
+    row = connection.execute(
+        "SELECT name, code FROM collections WHERE id = ?", (int(collection_id),)
+    ).fetchone()
+    return bool(row and is_admin_only_collection(name=row["name"], code=row["code"]))
+
 def is_admin_only_card(connection: sqlite3.Connection, card_id: int) -> bool:
     row = connection.execute(
         """
@@ -57,7 +67,7 @@ def cleanup_admin_only_distribution(connection: sqlite3.Connection) -> dict[str,
     ids = admin_only_card_ids(connection)
     if not ids:
         return {
-            "pack_cards": 0, "black_market": 0, "black_market_rotations": 0,
+            "pack_cards": 0, "pack_slots": 0, "black_market": 0, "black_market_rotations": 0,
             "stronghold_products": 0, "ranked_pack_cards": 0, "starter_kit": 0,
             "ranked_pass_rewards": 0, "hockey_pass_rewards": 0, "events": 0,
             "reward_settings": 0,
@@ -79,6 +89,29 @@ def cleanup_admin_only_distribution(connection: sqlite3.Connection) -> dict[str,
     deleted_pack_cards = connection.execute(
         f"DELETE FROM pack_cards WHERE card_id IN ({placeholders})", params
     ).rowcount
+
+    admin_collection_ids = [
+        int(row["id"]) for row in connection.execute(
+            """
+            SELECT id FROM collections
+            WHERE LOWER(TRIM(name)) = 'leaders'
+               OR LOWER(TRIM(COALESCE(code, ''))) = 'leaders'
+            """
+        ).fetchall()
+    ]
+    disabled_pack_slots = 0
+    if admin_collection_ids:
+        collection_placeholders = ",".join("?" for _ in admin_collection_ids)
+        disabled_pack_slots = connection.execute(
+            f"""
+            UPDATE pack_slots
+            SET active = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE active != 0
+              AND (collection_id IN ({collection_placeholders})
+                   OR special_collection_id IN ({collection_placeholders}))
+            """,
+            (*admin_collection_ids, *admin_collection_ids),
+        ).rowcount
 
     deleted_ranked_pack_cards = connection.execute(
         f"DELETE FROM ranked_pack_cards WHERE card_id IN ({placeholders})", params
@@ -148,6 +181,7 @@ def cleanup_admin_only_distribution(connection: sqlite3.Connection) -> dict[str,
 
     return {
         "pack_cards": int(deleted_pack_cards or 0),
+        "pack_slots": int(disabled_pack_slots or 0),
         "black_market": int(black_market_rows or 0),
         "black_market_rotations": int(black_market_rotation_rows or 0),
         "stronghold_products": disabled_products,

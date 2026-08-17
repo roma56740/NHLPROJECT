@@ -26,6 +26,7 @@ from app.keyboards.main_menu import (
     build_user_progress_keyboard,
 )
 from app.services.currencies import format_currency_amount
+from app.services.cache_cleanup import remove_render_cache_file
 from app.services.matches import get_match_main_info
 from app.services.render_theme import asset_absolute_path, get_render_theme_config
 from app.services.renders import render_main_menu_image
@@ -146,11 +147,14 @@ async def send_home_photo(message: Message, user_id: int, *, remove_reply_keyboa
         await remove_legacy_reply_keyboard(message)
     caption, keyboard = await _home_payload(user_id)
     media_path, is_video = await get_home_media(user_id)
-    if is_video:
-        return await message.answer_video(
-            video=FSInputFile(media_path), caption=caption, reply_markup=keyboard, supports_streaming=True
-        )
-    return await message.answer_photo(photo=FSInputFile(media_path), caption=caption, reply_markup=keyboard)
+    try:
+        if is_video:
+            return await message.answer_video(
+                video=FSInputFile(media_path), caption=caption, reply_markup=keyboard, supports_streaming=True
+            )
+        return await message.answer_photo(photo=FSInputFile(media_path), caption=caption, reply_markup=keyboard)
+    finally:
+        remove_render_cache_file(media_path)
 
 
 async def replace_with_menu_photo(
@@ -190,6 +194,8 @@ async def replace_with_menu_photo(
             await callback.bot.send_video(chat_id=message.chat.id, video=FSInputFile(media_path), caption=caption, reply_markup=keyboard, supports_streaming=True)
         else:
             await callback.bot.send_photo(chat_id=message.chat.id, photo=FSInputFile(media_path), caption=caption, reply_markup=keyboard)
+    finally:
+        remove_render_cache_file(media_path)
 
 
 async def show_home_callback(callback: CallbackQuery) -> None:

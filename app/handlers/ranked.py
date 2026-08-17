@@ -19,6 +19,7 @@ from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, Inli
 
 from app.services import match_guard, ranked_captain, ranked_core, ranked_cosmetics, ranked_packs, ranked_pass, ranked_shootout, war2_cosmetics
 from app.services.audit_log import record_committed
+from app.services.cache_cleanup import remove_render_cache_file
 from app.services.lineup import get_lineup_overview
 from app.services.ranked_common import RankedError
 from app.services.renders import render_lineup_image
@@ -281,10 +282,13 @@ async def _send_ranked_lineup_previews(callback: CallbackQuery, result, user_id:
             own_render_overview, user_id, title=f"ТВОЙ СОСТАВ: {own_name}",
             background_override_path=own_background, show_salary_cap=True,
         )
-        await callback.bot.send_photo(
-            chat_id=chat_id, photo=FSInputFile(own_image),
-            caption=f"<b>Твой состав</b>\n{own_name}\nOVR: <b>{own_overview.average_overall or '—'}</b> (+{own_overview.chemistry_bonus})",
-        )
+        try:
+            await callback.bot.send_photo(
+                chat_id=chat_id, photo=FSInputFile(own_image),
+                caption=f"<b>Твой состав</b>\n{own_name}\nOVR: <b>{own_overview.average_overall or '—'}</b> (+{own_overview.chemistry_bonus})",
+            )
+        finally:
+            remove_render_cache_file(own_image)
         await asyncio.sleep(0.7)
 
         if result.opponent_bot_overview is not None:
@@ -313,10 +317,13 @@ async def _send_ranked_lineup_previews(callback: CallbackQuery, result, user_id:
             title=f"СОСТАВ СОПЕРНИКА: {opponent_name}",
             background_override_path=background_path, show_salary_cap=True,
         )
-        await callback.bot.send_photo(
-            chat_id=chat_id, photo=FSInputFile(image_path),
-            caption=f"<b>Состав соперника</b>\n{opponent_name}\nOVR: <b>{overview.average_overall or '—'}</b> (+{overview.chemistry_bonus})",
-        )
+        try:
+            await callback.bot.send_photo(
+                chat_id=chat_id, photo=FSInputFile(image_path),
+                caption=f"<b>Состав соперника</b>\n{opponent_name}\nOVR: <b>{overview.average_overall or '—'}</b> (+{overview.chemistry_bonus})",
+            )
+        finally:
+            remove_render_cache_file(image_path)
     except Exception as error:
         logger.exception("Failed to render Ranked lineups: %s", error)
 

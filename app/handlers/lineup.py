@@ -19,6 +19,7 @@ from app.services.lineup import (
     set_lineup_card,
 )
 from app.services.renders import render_lineup_image
+from app.services.cache_cleanup import remove_render_cache_file
 from app.services.card_sorting import set_user_card_sort_order
 from app.services.users import get_player_profile_by_telegram_id
 from app.texts.lineup import LINEUP_CLEAR_CONFIRM_TEXT, build_lineup_text, build_slot_cards_text
@@ -106,12 +107,15 @@ async def send_lineup_view(target: CallbackQuery | Message, overview, reply_mark
     else:
         await safe_delete_message(message)
 
-    await bot.send_photo(
-        chat_id=message.chat.id,
-        photo=FSInputFile(render_path),
-        caption=text,
-        reply_markup=reply_markup,
-    )
+    try:
+        await bot.send_photo(
+            chat_id=message.chat.id,
+            photo=FSInputFile(render_path),
+            caption=text,
+            reply_markup=reply_markup,
+        )
+    finally:
+        remove_render_cache_file(render_path)
 
 
 async def get_current_player(callback_or_message: CallbackQuery | Message):

@@ -13,7 +13,11 @@ logger = logging.getLogger(__name__)
 # необходимости (например для локальной разработки).
 RENDER_CACHE = Path(os.getenv('RENDER_CACHE_PATH', '/app/cache/render_cache'))
 MAX_BYTES = 250 * 1024 * 1024
-TTL_SECONDS = 2 * 60 * 60
+# Обычные рендеры должны жить недолго: handlers удаляют их сразу после отправки,
+# а этот TTL — страховка на случай падения/ошибки Telegram до finally.
+TTL_SECONDS = 30 * 60
+# Black Market preview переиспользуется между открытиями витрины, поэтому держим дольше.
+BLACK_MARKET_PREVIEW_TTL_SECONDS = 12 * 60 * 60
 INTERVAL_SECONDS = 30 * 60
 
 
@@ -36,7 +40,12 @@ def cleanup_render_cache(path: Path = RENDER_CACHE) -> tuple[int, int, int]:
             total += stat.st_size
 
         for mtime, size, item in list(files):
-            if now - mtime <= TTL_SECONDS:
+            try:
+                relative_parts = item.relative_to(path).parts
+            except ValueError:
+                relative_parts = item.parts
+            ttl = BLACK_MARKET_PREVIEW_TTL_SECONDS if 'black_market_previews' in relative_parts else TTL_SECONDS
+            if now - mtime <= ttl:
                 continue
             try:
                 item.unlink()
@@ -71,6 +80,52 @@ def cleanup_render_cache(path: Path = RENDER_CACHE) -> tuple[int, int, int]:
     except Exception:
         logger.exception('[render_cache] cleanup failed')
         return removed, freed, 0
+
+
+def is_render_cache_path(path_value: str | Path | None, *, root: Path = RENDER_CACHE) -> bool:
+    """True только для файлов внутри временного render cache.
+
+    Нужен handlers, чтобы после отправки Telegram можно было безопасно удалить
+    сгенерированный PNG, не рискуя удалить постоянный upload/asset.
+    """
+    if not path_value:
+        return False
+    try:
+        candidate = Path(path_value).resolve(strict=False)
+        cache_root = root.resolve(strict=False)
+        candidate.relative_to(cache_root)
+        return True
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return False
+
+
+def remove_render_cache_file(path_value: str | Path | None, *, root: Path = RENDER_CACHE) -> bool:
+    """Удаляет один временный render после отправки и пустые parent-директории.
+
+    Функция намеренно отказывается трогать что-либо вне RENDER_CACHE.
+    """
+    if not is_render_cache_path(path_value, root=root):
+        return False
+    item = Path(path_value)
+    try:
+        if not item.is_file() or item.is_symlink():
+            return False
+        item.unlink()
+    except OSError:
+        logger.exception('[render_cache] failed_to_remove_after_send=%s', item)
+        return False
+
+    cache_root = root.resolve(strict=False)
+    parent = item.parent
+    while True:
+        try:
+            if parent.resolve(strict=False) == cache_root:
+                break
+            parent.rmdir()
+        except OSError:
+            break
+        parent = parent.parent
+    return True
 
 
 async def render_cache_cleanup_loop() -> None:

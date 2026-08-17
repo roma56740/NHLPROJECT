@@ -11,13 +11,15 @@ from app.database.db import get_connection
 from app.services.bot_card_policy import BOT_BLOCKED_COLLECTION_CODE, BOT_BLOCKED_COLLECTION_NAME
 from app.services.user_cards import PlayerCardsPage, PlayerCardListItem
 from app.services.render_theme import get_render_theme_config, asset_absolute_path
+from app.services.cache_cleanup import RENDER_CACHE, cleanup_render_cache as cleanup_shared_render_cache
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 VISUAL_DIR = ROOT_DIR / "assets" / "visual"
-RENDER_DIR = ROOT_DIR / "data" / "render_cache"
+RENDER_DIR = RENDER_CACHE
 RENDER_DIR.mkdir(parents=True, exist_ok=True)
 
-RENDER_CACHE_TTL_SECONDS = 6 * 60 * 60
+RENDER_CACHE_TTL_SECONDS = 30 * 60
+_LAST_RENDER_CACHE_CLEANUP = 0.0
 
 # Стандарт пропорции берём из присланного примера карточки: 914x1280.
 CARD_REFERENCE_WIDTH = 914
@@ -41,17 +43,16 @@ RARITY_COLORS = {
 
 
 def cleanup_render_cache() -> None:
-    now = time.time()
+    # Не сканируем каталог на каждом рендере. Фоновый cleaner всё равно работает,
+    # но раз в 5 минут делаем страховочную рекурсивную очистку прямо из renderer.
+    global _LAST_RENDER_CACHE_CLEANUP
+    now = time.monotonic()
+    if now - _LAST_RENDER_CACHE_CLEANUP < 5 * 60:
+        return
+    _LAST_RENDER_CACHE_CLEANUP = now
     try:
-        for path in RENDER_DIR.iterdir():
-            if not path.is_file():
-                continue
-            try:
-                if now - path.stat().st_mtime > RENDER_CACHE_TTL_SECONDS:
-                    path.unlink()
-            except OSError:
-                continue
-    except OSError:
+        cleanup_shared_render_cache(RENDER_DIR)
+    except Exception:
         pass
 
 
@@ -741,7 +742,7 @@ def render_card_profile_image(card: Any, user_id: int = 0) -> Path:
     return output
 
 
-PREVIEW_DIR = ROOT_DIR / "data" / "render_cache" / "black_market_previews"
+PREVIEW_DIR = RENDER_DIR / "black_market_previews"
 PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -764,10 +765,10 @@ def render_black_market_item_preview(
 
     Кэшируется по `cache_key` (стабильный, например f"pool_item_{id}") — повторный вызов
     для того же предмета переиспользует уже отрендеренный файл вместо перерисовки.
-    Это НЕ тот же TTL-кэш, что RENDER_DIR/cleanup_render_cache() (тот подходит для
-    "рендерится один раз на конкретный экран и больше не нужен"; здесь наоборот —
-    превью долгоживущее и должно инвалидироваться явно при правке предмета пула,
-    см. invalidate_black_market_preview(), а не по времени).
+    Превью хранится в отдельной подпапке общего ephemeral render-cache. Обычные
+    одноразовые рендеры handlers удаляют сразу после отправки, а Black Market preview
+    переиспользуется и имеет увеличенный TTL (12 часов). При изменении предмета пула
+    он по-прежнему инвалидируется явно через invalidate_black_market_preview().
     """
     safe_key = "".join(char if char.isalnum() or char in "-_" else "_" for char in cache_key)
     output = PREVIEW_DIR / f"{safe_key}.png"

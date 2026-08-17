@@ -23,7 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable
 
 from app.database.db import get_connection
-from app.services.card_distribution_policy import is_admin_only_card
+from app.services.card_distribution_policy import is_admin_only_card, is_admin_only_collection_id
 from app.services.admin_permissions import (
     PERMISSION_ADMIN_PANEL,
     PERMISSION_BLACK_MARKET,
@@ -692,6 +692,8 @@ def _prepare_row(connection: sqlite3.Connection, target: BulkTarget, row: dict[s
         row["pack_id"] = _pack_id(connection, row.get("pack_code"))
         row["collection_id"] = _collection_id(connection, row)
         row["special_collection_id"] = _collection_id(connection, row, "special_collection")
+        if is_admin_only_collection_id(connection, row["collection_id"]) or is_admin_only_collection_id(connection, row["special_collection_id"]):
+            raise ValueError("Leaders выдаются только администрацией и не могут использоваться в слотах паков/магазина")
     elif target.code == "pack_cards":
         row["pack_id"] = _pack_id(connection, row.get("pack_code"))
         row["card_id"] = _card_id(connection, row)

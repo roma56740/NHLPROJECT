@@ -29,6 +29,7 @@ from app.keyboards.packs import (
 )
 
 from app.services.renders import render_card_profile_image
+from app.services.cache_cleanup import remove_render_cache_file
 from app.services.packs import (
     PackDraft,
     add_card_to_pack,
@@ -551,6 +552,8 @@ async def _replace_opening_message_with_reward(
             return message
         except TelegramBadRequest:
             pass
+        finally:
+            remove_render_cache_file(image_path)
 
     # Safe fallback for a missing/broken card image: keep the award visible and do
     # not lose the already-committed pack result.

@@ -19,6 +19,7 @@ from app.keyboards.matches import (
     build_matches_main_keyboard,
 )
 from app.services.lineup import get_lineup_overview
+from app.services.cache_cleanup import remove_render_cache_file
 from app.services.renders import render_lineup_image, render_opponent_lineup_placeholder
 from app.services.matches import (
     MatchPlayResult,
@@ -164,11 +165,14 @@ async def send_match_lineup_previews(*, bot, chat_id: int, result: MatchPlayResu
                 own_overview, result.user_id, title=f"ТВОЙ СОСТАВ: {own_name}",
                 background_override_path=own_background, frame_override_path=own_frame,
             )
-            await bot.send_photo(
-                chat_id=chat_id,
-                photo=FSInputFile(own_image),
-                caption=f"<b>Твой состав</b>\n{own_name}\nOVR: <b>{own_overview.average_overall or '—'}</b> (+{own_overview.chemistry_bonus})",
-            )
+            try:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=FSInputFile(own_image),
+                    caption=f"<b>Твой состав</b>\n{own_name}\nOVR: <b>{own_overview.average_overall or '—'}</b> (+{own_overview.chemistry_bonus})",
+                )
+            finally:
+                remove_render_cache_file(own_image)
             await asyncio.sleep(0.7)
 
         if result.opponent_user_id is not None:
@@ -182,26 +186,32 @@ async def send_match_lineup_previews(*, bot, chat_id: int, result: MatchPlayResu
                 background_override_path=opponent_background,
                 frame_override_path=opponent_frame,
             )
-            await bot.send_photo(
-                chat_id=chat_id,
-                photo=FSInputFile(opponent_image),
-                caption=(
-                    f"<b>Состав соперника</b>\n"
-                    f"{opponent_name}\n"
-                    f"OVR: <b>{opponent_overview.average_overall or '—'}</b> (+{opponent_overview.chemistry_bonus})"
-                ),
-            )
+            try:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=FSInputFile(opponent_image),
+                    caption=(
+                        f"<b>Состав соперника</b>\n"
+                        f"{opponent_name}\n"
+                        f"OVR: <b>{opponent_overview.average_overall or '—'}</b> (+{opponent_overview.chemistry_bonus})"
+                    ),
+                )
+            finally:
+                remove_render_cache_file(opponent_image)
         else:
             opponent_image = render_opponent_lineup_placeholder(
                 opponent_name=result.opponent_name or "BOT",
                 opponent_ovr=result.opponent_lineup_ovr,
                 user_id=result.user_id or 0,
             )
-            await bot.send_photo(
-                chat_id=chat_id,
-                photo=FSInputFile(opponent_image),
-                caption=f"<b>Состав соперника</b>\n{result.opponent_name or 'BOT'}\nOVR: <b>{result.opponent_lineup_ovr}</b> (+0)",
-            )
+            try:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=FSInputFile(opponent_image),
+                    caption=f"<b>Состав соперника</b>\n{result.opponent_name or 'BOT'}\nOVR: <b>{result.opponent_lineup_ovr}</b> (+0)",
+                )
+            finally:
+                remove_render_cache_file(opponent_image)
             await asyncio.sleep(0.7)
     except Exception as error:
         logger.exception("Failed to render pre-match lineups: %s", error)

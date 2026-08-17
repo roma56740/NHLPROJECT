@@ -944,7 +944,7 @@ async def admin_cards_edit_image_value(message: Message, state: FSMContext) -> N
 
 
 
-@router.callback_query(F.data.startswith("admin_cards:owners:"))
+@router.callback_query(F.data.startswith("ac:o:"))
 async def admin_cards_owners(callback: CallbackQuery, state: FSMContext) -> None:
     if not await answer_callback_admin_only(callback):
         return
@@ -963,7 +963,7 @@ async def admin_cards_owners(callback: CallbackQuery, state: FSMContext) -> None
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin_cards:owner:"))
+@router.callback_query(F.data.startswith("ac:u:"))
 async def admin_cards_owner_copies(callback: CallbackQuery, state: FSMContext) -> None:
     if not await answer_callback_admin_only(callback):
         return
@@ -996,7 +996,7 @@ async def admin_cards_owner_copies(callback: CallbackQuery, state: FSMContext) -
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin_cards:copy:"))
+@router.callback_query(F.data.startswith("ac:c:"))
 async def admin_cards_owner_copy(callback: CallbackQuery, state: FSMContext) -> None:
     if not await answer_callback_admin_only(callback):
         return
@@ -1023,7 +1023,7 @@ async def admin_cards_owner_copy(callback: CallbackQuery, state: FSMContext) -> 
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin_cards:revoke_confirm:"))
+@router.callback_query(F.data.startswith("ac:rc:"))
 async def admin_cards_revoke_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     if not await answer_callback_admin_only(callback):
         return
@@ -1050,7 +1050,7 @@ async def admin_cards_revoke_confirm(callback: CallbackQuery, state: FSMContext)
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin_cards:revoke_do:"))
+@router.callback_query(F.data.startswith("ac:rd:"))
 async def admin_cards_revoke_do(callback: CallbackQuery, state: FSMContext) -> None:
     if not await answer_callback_admin_only(callback):
         return

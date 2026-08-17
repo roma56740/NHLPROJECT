@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from app.keyboards.admin_render import build_admin_render_cancel_keyboard, build_admin_render_keyboard
 from app.services.render_theme import RENDER_UPLOAD_DIR, get_render_theme_config, relative_asset_path
+from app.services.cache_cleanup import remove_render_cache_file
 from app.services.renders import render_admin_preview
 from app.services.settings import set_setting_value
 from app.states.admin_render import AdminRenderStates
@@ -216,5 +217,8 @@ async def admin_render_preview(callback: CallbackQuery) -> None:
     except Exception as error:
         await callback.answer(f"Ошибка превью: {type(error).__name__}", show_alert=True)
         return
-    await callback.bot.send_photo(chat_id=callback.message.chat.id, photo=FSInputFile(path), caption=f"👁 Превью: {kind}")
+    try:
+        await callback.bot.send_photo(chat_id=callback.message.chat.id, photo=FSInputFile(path), caption=f"👁 Превью: {kind}")
+    finally:
+        remove_render_cache_file(path)
     await callback.answer()

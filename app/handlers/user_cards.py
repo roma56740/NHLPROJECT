@@ -16,6 +16,7 @@ from app.keyboards.user_cards import (
     build_user_cards_main_keyboard,
 )
 from app.services.community import get_user_id_by_telegram_id
+from app.services.cache_cleanup import remove_render_cache_file
 from app.services.card_sorting import set_user_card_sort_order
 from app.services.quick_sell import (
     get_sell_preview,
@@ -131,12 +132,15 @@ async def send_cards_page_view(
     else:
         await safe_delete_message(message)
 
-    await bot.send_photo(
-        chat_id=message.chat.id,
-        photo=FSInputFile(render_path),
-        caption=text,
-        reply_markup=reply_markup,
-    )
+    try:
+        await bot.send_photo(
+            chat_id=message.chat.id,
+            photo=FSInputFile(render_path),
+            caption=text,
+            reply_markup=reply_markup,
+        )
+    finally:
+        remove_render_cache_file(render_path)
 
 
 async def show_cards_page(callback: CallbackQuery, page: int) -> None:
@@ -201,12 +205,15 @@ async def show_card_profile(callback: CallbackQuery, user_card_id: int, page: in
 
     if image_path is not None:
         await safe_delete_callback_message(callback)
-        await callback.bot.send_photo(
-            chat_id=message.chat.id,
-            photo=FSInputFile(image_path),
-            caption=text,
-            reply_markup=keyboard,
-        )
+        try:
+            await callback.bot.send_photo(
+                chat_id=message.chat.id,
+                photo=FSInputFile(image_path),
+                caption=text,
+                reply_markup=keyboard,
+            )
+        finally:
+            remove_render_cache_file(image_path)
         return
 
     await edit_or_send(callback, text, reply_markup=keyboard)

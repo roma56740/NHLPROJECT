@@ -20,6 +20,7 @@ from app.services.dna_crafting import (
     get_dna_inventory_progress,
 )
 from app.services.dna_render import render_dna_event_image
+from app.services.cache_cleanup import remove_render_cache_file
 
 router = Router()
 
@@ -37,7 +38,10 @@ async def _replace_with_photo(callback: CallbackQuery, caption: str, reply_marku
         await callback.message.delete()
     except TelegramBadRequest:
         pass
-    await callback.bot.send_photo(chat_id=callback.message.chat.id, photo=FSInputFile(path), caption=caption, reply_markup=reply_markup)
+    try:
+        await callback.bot.send_photo(chat_id=callback.message.chat.id, photo=FSInputFile(path), caption=caption, reply_markup=reply_markup)
+    finally:
+        remove_render_cache_file(path)
 
 
 def _main_caption(progress, welcome_granted: bool = False) -> str:

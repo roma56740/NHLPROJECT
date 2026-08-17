@@ -18,6 +18,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from app.services import war2_core, war2_cosmetics, war2_draft, war2_modes
 from app.services.card_sorting import set_user_card_sort_order
+from app.services.cache_cleanup import remove_render_cache_file
 from app.services.renders import render_war2_lineup_image
 from app.services.user_cards import get_player_cards_page
 from app.services.users import get_player_profile_by_telegram_id
@@ -613,11 +614,14 @@ async def war2_confirm(callback: CallbackQuery) -> None:
             badge_text=badge_text,
         )
         if isinstance(callback.message, Message):
-            await callback.message.answer_photo(
-                photo=image_path.open("rb"),
-                caption=text,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
-            )
+            try:
+                await callback.message.answer_photo(
+                    photo=image_path.open("rb"),
+                    caption=text,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+                )
+            finally:
+                remove_render_cache_file(image_path)
             await callback.answer()
             return
     except Exception:

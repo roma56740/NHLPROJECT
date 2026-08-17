@@ -10,6 +10,7 @@ from app.keyboards.free_card import (
     build_free_card_user_keyboard,
 )
 from app.services.renders import render_card_profile_image
+from app.services.cache_cleanup import remove_render_cache_file
 from app.services.free_card import (
     add_free_card_collection,
     claim_free_card,
@@ -174,12 +175,15 @@ async def free_card_claim_callback(callback: CallbackQuery, state: FSMContext) -
         image_path = None
 
     if image_path is not None:
-        await callback.bot.send_photo(
-            chat_id=message.chat.id,
-            photo=FSInputFile(image_path),
-            caption=text,
-            reply_markup=build_free_card_user_keyboard(False),
-        )
+        try:
+            await callback.bot.send_photo(
+                chat_id=message.chat.id,
+                photo=FSInputFile(image_path),
+                caption=text,
+                reply_markup=build_free_card_user_keyboard(False),
+            )
+        finally:
+            remove_render_cache_file(image_path)
     else:
         await callback.bot.send_message(
             chat_id=message.chat.id,

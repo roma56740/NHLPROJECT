@@ -1014,3 +1014,12 @@ existing gameplay behavior beyond adding the guard itself.
 - Все попытки сохраняются в ranked_matches.shootout_log_json; также хранятся счёт после трёх периодов и итог серии.
 - MatchGuard удерживает пользователя на всём протяжении 60-секундной анимации и мини-игры.
 - Универсальная кнопка «Назад» не добавляется к четырём игровым кнопкам во время активного выбора.
+
+## R15 — Render cache / Railway Volume fix (safe deploy)
+
+- Runtime render cache moved to `RENDER_CACHE_PATH` (`/app/cache/render_cache` by default), outside `/app/data`.
+- One-shot generated renders are deleted after send with a cache-boundary safety check.
+- Recursive TTL/cap cleanup added, with a longer TTL for Black Market previews.
+- Legacy `/app/data/render_cache` cleanup retained to recover occupied Railway Volume space.
+- R14 Leaders admin-only/card-owner controls retained.
+- Production DB/uploads predeploy guards retained; `SCHEMA_VERSION` stays at 3 because R15 has no DB schema migration.
