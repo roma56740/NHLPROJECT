@@ -1,0 +1,267 @@
+/* Nexcore R18 - global media normalization.
+   Full card renders keep a portrait 3:4 frame without destructive cropping.
+   Promotional artwork stays cinematic 16:9 / cover. Icons remain square / contain. */
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+/* ---------- Hockey card renders ---------- */
+.player-card,
+.card.live-player-card,
+.empty-slot {
+  aspect-ratio: 3 / 4;
+}
+
+.card.live-player-card {
+  position: relative;
+  width: 100%;
+  display: block;
+  overflow: visible;
+  isolation: isolate;
+  background: transparent;
+  border-radius: 12px;
+}
+
+.card.live-player-card .card-inner {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #0b0c0f;
+}
+
+.card.live-player-card .card-inner img,
+.player-card.authentic .card-inner img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain !important;
+  object-position: center !important;
+  filter: none !important;
+  mix-blend-mode: normal !important;
+  opacity: 1 !important;
+  background: #0b0c0f;
+}
+
+/* Live lineup used a generic .card wrapper, so it never inherited player-card sizing.
+   Give each slot a real portrait footprint and keep action links from inheriting card width. */
+.lineup-row > div {
+  flex: 0 1 120px;
+  width: 120px;
+  max-width: 29%;
+  min-width: 0;
+}
+
+.lineup-row > div > a:not(.text-link) {
+  display: block;
+  width: 100%;
+  max-width: none;
+}
+
+.lineup-row .card.live-player-card {
+  width: 100%;
+}
+
+.lineup-row .card-caption .text-link,
+.lineup-row > div > .text-link {
+  width: auto;
+  max-width: 100%;
+}
+
+.lineup-row .card-caption {
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.lineup-row .card-caption span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Full-card art in event/catalog surfaces: preserve the whole render. */
+.hero-entry-art,
+.hero-confirm-card,
+.chapter-page-art {
+  aspect-ratio: 3 / 4;
+  background: #0b0c0f;
+}
+
+.hero-entry-art img,
+.hero-confirm-card img,
+.chapter-page-art img,
+.pirate-card img,
+.fireside-player img,
+.fireside-reward-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain !important;
+  object-position: center !important;
+  background: #0b0c0f;
+}
+
+/* Live HEROES grid did not have a dedicated media layout in the original stylesheet. */
+.hero-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 24px 16px;
+}
+
+.hero-player {
+  min-width: 0;
+  display: block;
+}
+
+.hero-player > img {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: contain;
+  object-position: center;
+  background: #0b0c0f;
+  border-radius: 14px;
+}
+
+.hero-player > span {
+  display: inline-block;
+  margin-top: 10px;
+  color: #d6bd88;
+  font-size: 10px;
+  letter-spacing: .08em;
+}
+
+.hero-player > h3 {
+  margin-top: 5px;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.hero-player > small {
+  display: block;
+  margin-top: 4px;
+}
+
+/* Event/player lists also use full card renders. */
+.pirate-card img,
+.fireside-player img {
+  aspect-ratio: 3 / 4;
+}
+
+/* ---------- Promotional / landscape media ---------- */
+.continue-art {
+  height: auto;
+  aspect-ratio: 16 / 9;
+}
+
+.hero-image,
+.continue-art > img,
+.mode-tile > img,
+.box-art > img,
+.pirates-banner > img,
+.pirates-pack-art > img,
+.fireside-box-hero > img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+
+.pirates-banner {
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border-radius: 26px;
+  background: #0b0c0f;
+}
+
+.pirates-banner > img {
+  border-radius: 0 !important;
+}
+
+.pirates-pack-art {
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  border-radius: 20px;
+  background: #0b0c0f;
+}
+
+.pirates-pack-art > img {
+  border-radius: 0 !important;
+}
+
+.mode-tile,
+.box-art,
+.fireside-box-hero {
+  background-color: #0b0c0f;
+}
+
+/* ---------- Square icons / collectibles ---------- */
+.item-art {
+  height: auto;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+}
+
+.fireside-craft-token,
+.fireside-collectible-art {
+  aspect-ratio: 1 / 1;
+}
+
+.fireside-craft-token img,
+.fireside-collectible-art img,
+.fireside-collectible-link img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain !important;
+  object-position: center;
+}
+
+.fireside-collectible-link img {
+  aspect-ratio: 1 / 1;
+}
+
+/* X-Factor artwork is an icon/plate, never crop it. */
+.ability img,
+.fireside-ability img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain !important;
+  object-position: center;
+}
+
+/* Brand assets must never inherit card/banner cropping. */
+.logo-crop img,
+.splash-logo {
+  object-fit: contain;
+}
+
+/* Narrow/mobile: two portrait cards per row, stable lineup widths. */
+@media (max-width: 800px) {
+  .hero-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 22px 14px;
+  }
+}
+
+@media (max-width: 700px) {
+  .lineup-row {
+    gap: 12px;
+  }
+
+  .lineup-row > div {
+    flex-basis: 31%;
+    width: 31%;
+    max-width: 31%;
+  }
+
+  .continue-art {
+    height: auto;
+    aspect-ratio: 16 / 9;
+  }
+
+  .chapter-page-art {
+    aspect-ratio: 3 / 4;
+  }
+}
