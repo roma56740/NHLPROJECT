@@ -4,7 +4,7 @@ from html import escape
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, User
 
@@ -90,6 +90,20 @@ async def handle_start_payload(message: Message, telegram_user: User, payload: s
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📊 Открыть сетку", callback_data=f"ct:view:{tid}")]])
     await message.answer(_creator_invite_text(meta, join_status), reply_markup=kb)
     return True
+
+
+@router.message(Command("miniapp"))
+async def miniapp_command(message: Message) -> None:
+    if message.from_user is None:
+        return
+    await register_or_update_player(message.from_user)
+    url = get_miniapp_url()
+    text = (
+        "<b>Nexcore</b>\n\nНажми кнопку ниже, чтобы открыть Mini App."
+        if url
+        else "<b>Nexcore</b>\n\nПубличный URL Mini App ещё не настроен."
+    )
+    await message.answer(text, reply_markup=build_miniapp_keyboard())
 
 
 @router.message(CommandStart())

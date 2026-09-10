@@ -189,7 +189,14 @@ def build_user_more_keyboard() -> InlineKeyboardMarkup:
 
 
 def build_admin_home_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
-    return _build(_admin_rows_for_user(ADMIN_HOME_BUTTONS, user_id))
+    markup = _build(_admin_rows_for_user(ADMIN_HOME_BUTTONS, user_id))
+    url = get_miniapp_url()
+    if url:
+        markup.inline_keyboard.insert(
+            0,
+            [InlineKeyboardButton(text="Открыть Nexcore", web_app=WebAppInfo(url=url))],
+        )
+    return markup
 
 
 def build_admin_all_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:

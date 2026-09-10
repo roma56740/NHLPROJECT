@@ -1,0 +1,12 @@
+NEXCORE R16 MINI APP LAUNCHER HOTFIX
+
+Changes:
+- Ordinary players default to Mini App-only mode once MINIAPP_URL or RAILWAY_PUBLIC_DOMAIN exists.
+- MINIAPP_ONLY_MODE=0 remains the emergency switch back to the legacy Telegram UI.
+- Administrators now see "Открыть Nexcore" at the top of their admin home keyboard.
+- /miniapp command opens the Mini App launcher for admins/testing.
+- No database files, migrations, schema versions, assets, user data, or event data are changed.
+
+Required Railway networking:
+- The service must have a public HTTPS domain.
+- Either let RAILWAY_PUBLIC_DOMAIN be provided by Railway or set MINIAPP_URL explicitly.

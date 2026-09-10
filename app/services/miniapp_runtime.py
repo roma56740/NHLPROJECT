@@ -33,8 +33,8 @@ def miniapp_port() -> int:
 
 
 def miniapp_only_mode_enabled() -> bool:
-    # Safe rollout default: do not freeze the working Telegram game until the
-    # operator explicitly enables Mini App-only mode after checking the public URL.
-    raw = (os.getenv("MINIAPP_ONLY_MODE") or "0").strip().lower()
+    # Production default: once a valid public Mini App URL exists, ordinary players
+    # use only the Mini App. Set MINIAPP_ONLY_MODE=0 for emergency legacy rollback.
+    raw = (os.getenv("MINIAPP_ONLY_MODE") or "1").strip().lower()
     requested = raw not in {"", "0", "false", "no", "off"}
     return requested and get_miniapp_url() is not None
