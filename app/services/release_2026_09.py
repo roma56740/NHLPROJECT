@@ -19,6 +19,26 @@ PASS_LEVELS = 30
 PASS_POINTS_PER_LEVEL = 5
 PASS_PREMIUM_PRICE_ENERGY = 400
 
+# R21 economy pass: fewer resource rolls and much less raw Coins per paid box.
+# Prices stay simple and admin-editable in DB after the one-time migration.
+STANDARD_BOX_ECONOMY: dict[str, dict[str, object]] = {
+    "ahl_box": {
+        "price": 50_000, "cards": 2, "resources": 1,
+        "resource_weights": (("coins", 30.0), ("fireside_collectible", 35.0), ("rank_point", 27.0), ("xf", 8.0)),
+        "coin_range": (5_000, 15_000), "rank_range": (1, 2), "collectible_range": (1, 1),
+    },
+    "common_box": {
+        "price": 140_000, "cards": 3, "resources": 1,
+        "resource_weights": (("coins", 25.0), ("fireside_collectible", 35.0), ("rank_point", 25.0), ("xf", 15.0)),
+        "coin_range": (10_000, 35_000), "rank_range": (2, 5), "collectible_range": (1, 2),
+    },
+    "elite_box": {
+        "price": 400_000, "cards": 4, "resources": 2,
+        "resource_weights": (("coins", 20.0), ("fireside_collectible", 30.0), ("rank_point", 25.0), ("xf", 25.0)),
+        "coin_range": (25_000, 75_000), "rank_range": (4, 10), "collectible_range": (2, 5),
+    },
+}
+
 ENERGY_TIERS: tuple[tuple[int, int], ...] = (
     (50, 0), (100, 5), (250, 10), (500, 15), (1000, 20),
     (2500, 30), (5000, 40), (7500, 45), (10000, 50),
@@ -171,6 +191,33 @@ def now_moscow() -> datetime:
 
 def calculate_pass_level(bp_points: int) -> int:
     return min(PASS_LEVELS, max(1, int(bp_points) // PASS_POINTS_PER_LEVEL + 1))
+
+
+def migrate_r21_balance_and_speed(connection: sqlite3.Connection) -> None:
+    """Apply safe R21 tuning to an already-migrated production database.
+
+    Admin-customized matchmaking values are preserved unless they still equal the
+    old 90/110 defaults. Box prices/counts are release content and are intentionally
+    updated to the new economy values.
+    """
+    wait_rows = connection.execute(
+        "SELECT key, value FROM game_settings WHERE key IN ('matchmaking_min_wait_seconds','matchmaking_max_wait_seconds')"
+    ).fetchall()
+    waits = {str(row["key"]): str(row["value"]) for row in wait_rows}
+    # Change the pair only when production still has the exact legacy defaults.
+    # If an admin customized either side, preserve the entire pair.
+    if waits.get("matchmaking_min_wait_seconds") == "90" and waits.get("matchmaking_max_wait_seconds") == "110":
+        connection.execute(
+            "UPDATE game_settings SET value='15', updated_at=CURRENT_TIMESTAMP WHERE key='matchmaking_min_wait_seconds'"
+        )
+        connection.execute(
+            "UPDATE game_settings SET value='25', updated_at=CURRENT_TIMESTAMP WHERE key='matchmaking_max_wait_seconds'"
+        )
+    for code, cfg in STANDARD_BOX_ECONOMY.items():
+        connection.execute(
+            "UPDATE boxes SET price_amount=?, cards_count=?, resources_count=?, updated_at=CURRENT_TIMESTAMP WHERE code=?",
+            (int(cfg["price"]), int(cfg["cards"]), int(cfg["resources"]), code),
+        )
 
 
 def energy_discount(quantity: int) -> int:
@@ -459,9 +506,9 @@ def migrate_release_schema(connection: sqlite3.Connection) -> None:
                ON CONFLICT(code) DO UPDATE SET title=excluded.title,description=excluded.description,active=1,updated_at=CURRENT_TIMESTAMP"""
         )
         for code,name,price,cards_count,resources_count,shop,sort,image in (
-            ("ahl_box","AHL Box",40000,2,1,1,10,"assets/visual/pack_default.jpg"),
-            ("common_box","Common Box",100000,3,2,1,20,"assets/visual/pack_default.jpg"),
-            ("elite_box","Elite Box",300000,4,3,1,30,"assets/visual/pack_default.jpg"),
+            ("ahl_box","AHL Box",int(STANDARD_BOX_ECONOMY["ahl_box"]["price"]),2,1,1,10,"assets/visual/pack_default.jpg"),
+            ("common_box","Common Box",int(STANDARD_BOX_ECONOMY["common_box"]["price"]),3,1,1,20,"assets/visual/pack_default.jpg"),
+            ("elite_box","Elite Box",int(STANDARD_BOX_ECONOMY["elite_box"]["price"]),4,2,1,30,"assets/visual/pack_default.jpg"),
             ("fireside_box","Fireside Box",0,0,1,0,40,"assets/release/fireside/fireside_collectible.png"),
             ("dead_mans_chest","Dead Man's Chest",0,0,1,0,50,"assets/release/pirates/dead_mans_chest.png"),
         ):
@@ -702,27 +749,30 @@ def open_box(telegram_id:int,code:str)->tuple[bool,str,list[dict]]:
                 rewards=[_fireside_player_reward(c,uid)]; guaranteed=1
                 c.execute("INSERT INTO fireside_box_state(user_id,first_guarantee_used) VALUES(?,1) ON CONFLICT(user_id) DO UPDATE SET first_guarantee_used=1,updated_at=CURRENT_TIMESTAMP",(uid,))
             else:
-                kind=_weighted_choice([("player",25),("last_spark",5),("ordinary_xfactor",15),("rank_point",20),("coins",25),("fireside_collectible",10)])
+                # R21: reduce raw-Coin inflation. Fireside remains a special box,
+                # but useful gameplay resources are now substantially more common
+                # than another large Coin payout.
+                kind=_weighted_choice([("player",25),("last_spark",5),("ordinary_xfactor",18),("rank_point",22),("coins",20),("fireside_collectible",10)])
                 if kind=="player": rewards=[_fireside_player_reward(c,uid)]
                 elif kind=="last_spark": _grant_xfactor(c,uid,"last_spark"); rewards=[{"type":"xfactor","label":"Last Spark"}]
                 elif kind=="ordinary_xfactor":
                     xf=_random_regular_xfactor(c)
                     if xf:_grant_xfactor(c,uid,xf); rewards=[{"type":"xfactor","label":xf.replace('_',' ').title()}]
                 elif kind=="rank_point": grant_currency(c,uid,"rank_point",5); rewards=[{"type":"currency","label":"5 Rank Coins"}]
-                elif kind=="coins": grant_currency(c,uid,"coins",100000); rewards=[{"type":"currency","label":"100,000 Coins"}]
+                elif kind=="coins": grant_currency(c,uid,"coins",50000); rewards=[{"type":"currency","label":"50,000 Coins"}]
                 else: grant_item(c,uid,"fireside_collectible",1); rewards=[{"type":"item","label":"Fireside Collectible ×1"}]
         elif code=="dead_mans_chest":
             state=c.execute("SELECT pity_counter FROM cursed_mirror_user_state WHERE user_id=?",(uid,)).fetchone(); pity=int(state[0]) if state else 0
             if pity>=5:
                 reward=_pirate_card_reward(c,uid); rewards=[reward]; pity=0; guaranteed=1
             else:
-                kind=_weighted_choice([("event_card",20),("ordinary_xfactor",12),("coins",37.7),("rank_point",20),("cursed_collectible",10),("premium_pass",0.3)])
+                kind=_weighted_choice([("event_card",20),("ordinary_xfactor",18),("coins",25.7),("rank_point",26),("cursed_collectible",10),("premium_pass",0.3)])
                 if kind=="event_card": rewards=[_pirate_card_reward(c,uid)]; pity=0
                 elif kind=="ordinary_xfactor":
                     xf=_random_regular_xfactor(c)
                     if xf:_grant_xfactor(c,uid,xf); rewards=[{"type":"xfactor","label":xf.replace('_',' ').title()}]
                     pity+=1
-                elif kind=="coins": grant_currency(c,uid,"coins",100000); rewards=[{"type":"currency","label":"100,000 Coins"}]; pity+=1
+                elif kind=="coins": grant_currency(c,uid,"coins",40000); rewards=[{"type":"currency","label":"40,000 Coins"}]; pity+=1
                 elif kind=="rank_point": grant_currency(c,uid,"rank_point",5); rewards=[{"type":"currency","label":"5 Rank Coins"}]; pity+=1
                 elif kind=="cursed_collectible": grant_item(c,uid,"cursed_collectible",1); rewards=[{"type":"item","label":"Cursed Collectible ×1"}]; pity+=1
                 else:
@@ -731,8 +781,8 @@ def open_box(telegram_id:int,code:str)->tuple[bool,str,list[dict]]:
         else:
             specs={
                 "ahl_box":(2,1,("ahl",),("default","base-collection"),97),
-                "common_box":(3,2,("ahl",),("default","base-collection"),65),
-                "elite_box":(4,3,("default","base-collection"),("team-of-week","totw"),85),
+                "common_box":(3,1,("ahl",),("default","base-collection"),65),
+                "elite_box":(4,2,("default","base-collection"),("team-of-week","totw"),85),
             }
             cards_count,res_count,primary,secondary,primary_pct=specs.get(code,(0,0,("default",),("default",),100))
             for _ in range(cards_count):
@@ -740,15 +790,16 @@ def open_box(telegram_id:int,code:str)->tuple[bool,str,list[dict]]:
                 card=_random_card(c,cols) or _random_card(c,("default","base-collection","ahl"))
                 if card:
                     grant_card(c,uid,int(card["id"]),code); rewards.append({"type":"card","label":f"{card['name']} · {card['overall']} OVR","card_id":int(card["id"])})
-            resource_weights={"ahl_box":[("coins",55.5),("fireside_collectible",30),("rank_point",10),("xf",4.5)],"common_box":[("coins",46),("fireside_collectible",30),("rank_point",15),("xf",9)],"elite_box":[("coins",37),("fireside_collectible",30),("rank_point",18),("xf",15)]}[code]
+            economy=STANDARD_BOX_ECONOMY[code]
+            resource_weights=list(economy["resource_weights"])
             for _ in range(res_count):
                 kind=_weighted_choice(resource_weights)
                 if kind=="coins":
-                    ranges={"ahl_box":(10000,25000),"common_box":(20000,60000),"elite_box":(50000,150000)}; amount=random.randint(*ranges[code]); grant_currency(c,uid,"coins",amount); rewards.append({"type":"currency","label":f"{amount:,} Coins"})
+                    amount=random.randint(*economy["coin_range"]); grant_currency(c,uid,"coins",amount); rewards.append({"type":"currency","label":f"{amount:,} Coins"})
                 elif kind=="rank_point":
-                    ranges={"ahl_box":(1,2),"common_box":(2,4),"elite_box":(4,8)}; amount=random.randint(*ranges[code]); grant_currency(c,uid,"rank_point",amount); rewards.append({"type":"currency","label":f"{amount} Rank Coins"})
+                    amount=random.randint(*economy["rank_range"]); grant_currency(c,uid,"rank_point",amount); rewards.append({"type":"currency","label":f"{amount} Rank Coins"})
                 elif kind=="fireside_collectible":
-                    ranges={"ahl_box":(1,1),"common_box":(1,2),"elite_box":(2,4)}; amount=random.randint(*ranges[code]); grant_item(c,uid,"fireside_collectible",amount); rewards.append({"type":"item","label":f"Fireside Collectible ×{amount}"})
+                    amount=random.randint(*economy["collectible_range"]); grant_item(c,uid,"fireside_collectible",amount); rewards.append({"type":"item","label":f"Fireside Collectible ×{amount}"})
                 else:
                     xf=_random_regular_xfactor(c)
                     if xf:_grant_xfactor(c,uid,xf); rewards.append({"type":"xfactor","label":xf.replace('_',' ').title()})

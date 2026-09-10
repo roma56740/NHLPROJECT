@@ -12,7 +12,7 @@ def build_miniapp_keyboard() -> InlineKeyboardMarkup:
     if url:
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="Открыть Nexcore", web_app=WebAppInfo(url=url))],
+                [InlineKeyboardButton(text="Открыть NHL Cards", web_app=WebAppInfo(url=url))],
                 [InlineKeyboardButton(text="Поддержка / покупка Energy", url=CONTACT_URL)],
             ]
         )

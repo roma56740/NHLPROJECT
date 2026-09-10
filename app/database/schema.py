@@ -109,13 +109,13 @@ DEFAULT_GAME_SETTINGS = [
     },
     {
         "key": "matchmaking_min_wait_seconds",
-        "value": "90",
+        "value": "15",
         "title": "Минимальное ожидание соперника",
         "description": "Через сколько секунд минимум бот может подобрать команду-соперника.",
     },
     {
         "key": "matchmaking_max_wait_seconds",
-        "value": "110",
+        "value": "25",
         "title": "Максимальное ожидание соперника",
         "description": "Через сколько секунд максимум бот может подобрать команду-соперника.",
     },

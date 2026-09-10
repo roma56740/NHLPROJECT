@@ -99,9 +99,9 @@ async def miniapp_command(message: Message) -> None:
     await register_or_update_player(message.from_user)
     url = get_miniapp_url()
     text = (
-        "<b>Nexcore</b>\n\nНажми кнопку ниже, чтобы открыть Mini App."
+        "<b>NHL Cards</b>\n\nНажми кнопку ниже, чтобы открыть игру."
         if url
-        else "<b>Nexcore</b>\n\nПубличный URL Mini App ещё не настроен."
+        else "<b>NHL Cards</b>\n\nПубличный URL Mini App ещё не настроен."
     )
     await message.answer(text, reply_markup=build_miniapp_keyboard())
 
@@ -121,9 +121,9 @@ async def start_command(message: Message, state: FSMContext) -> None:
         await delete_start_message(message)
         url = get_miniapp_url()
         text = (
-            "<b>Nexcore</b>\n\nОткрой игру через Mini App."
+            "<b>NHL Cards</b>\n\nОткрой игру через Mini App."
             if url
-            else "<b>Nexcore</b>\n\nMini App пока не получил публичный URL. Для покупки Energy или связи: @teyld"
+            else "<b>NHL Cards</b>\n\nMini App пока не получил публичный URL. Для покупки Energy или связи: @teyld"
         )
         await message.answer(text, reply_markup=build_miniapp_keyboard())
         return

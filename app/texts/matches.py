@@ -44,7 +44,7 @@ def build_match_playing_text(opponent_name: str, opponent_type: str = "bot") -> 
 Тип соперника: <b>{opponent_line}</b>
 
 🥅 Идут периоды, броски и борьба за шайбу.
-Матч длится ровно <b>1 минуту</b>.
+Матч длится около <b>30 секунд</b>.
 Голы будут появляться прямо во время игры.
 """.strip()
 
@@ -63,6 +63,33 @@ def build_match_no_goal_live_text(result: MatchPlayResult) -> str:
 
 🧤 Вратари ловят всё подряд.
 Команды держат темп, трибуны ждут первый гол.
+""".strip()
+
+
+def build_match_event_live_text(
+    result: MatchPlayResult,
+    *,
+    event: MatchEventInfo,
+    user_score: int,
+    opponent_score: int,
+) -> str:
+    labels = {
+        "GOAL": "ГОЛ",
+        "SAVE": "СЕЙВ",
+        "POWERPLAY": "БОЛЬШИНСТВО",
+        "BIG HIT": "СИЛОВОЙ ПРИЁМ",
+        "BREAKAWAY": "ВЫХОД 1 НА 1",
+        "XFACTOR": "X-FACTOR",
+    }
+    icon = EVENT_ICONS.get(event.event_type, "🏒")
+    label = labels.get(event.event_type, "МОМЕНТ")
+    return f"""
+<b>🔥 Матч идёт · {safe(event.period_title)}</b>
+
+Счёт: <b>{user_score}</b> — <b>{opponent_score}</b>
+
+{icon} <b>{label}</b> · {safe(event.time_text)}
+{safe(event.description)}
 """.strip()
 
 

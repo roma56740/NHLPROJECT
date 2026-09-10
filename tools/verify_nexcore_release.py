@@ -27,12 +27,15 @@ def main() -> int:
         "app/services/miniapp_server.py",
         "app/services/miniapp_runtime.py",
         "app/middlewares/miniapp_freeze.py",
+        "app/middlewares/anti_autoclick.py",
         "app/keyboards/miniapp.py",
         "app/keyboards/main_menu.py",
         "app/handlers/start.py",
         "app/services/admin_wallets.py",
         "nexcore_miniapp/dist/index.html",
         "nexcore_miniapp/dist/app.js",
+        "nexcore_miniapp/dist/locale.js",
+        "nexcore_miniapp/dist/media.css",
         "nexcore_miniapp/dist/style.css",
         "RESTORE_SEED_SHA256.txt",
         "tools/restore_latest_predeploy.py",
@@ -43,6 +46,7 @@ def main() -> int:
 
     require("app/services/backups.py", "SCHEMA_VERSION = 4")
     require("app/database/db.py", '0012_nexcore_release_2026_09_safe')
+    require("app/database/db.py", '0013_nhl_cards_r21_balance_speed')
     require("app/database/db.py", '0012_nexcore_release_2026_09')
     require("app/services/release_2026_09.py", "SAVEPOINT nexcore_release_2026_09_safe")
     require("app/services/release_2026_09.py", '("premium_pass",0.3)')
@@ -70,7 +74,7 @@ def main() -> int:
     require("main.py", "resume_pending_pack_reveals")
 
     require("app/keyboards/main_menu.py", "⚡ Донат / Energy")
-    require("app/keyboards/main_menu.py", "Открыть Nexcore")
+    require("app/keyboards/main_menu.py", "Открыть NHL Cards")
     require("app/texts/admin_wallets.py", "@teyld")
     require("app/services/admin_wallets.py", 'WALLET_CURRENCY_CODES = ("coins", "energy", "rank_point")')
 
@@ -81,6 +85,15 @@ def main() -> int:
     forbid("nexcore_miniapp/dist/app.js", "state.energy+=n")
     forbid("nexcore_miniapp/dist/app.js", "energy:savedSession.energy??1000")
     require("nexcore_miniapp/dist/index.html", "telegram-web-app.js")
+    require("nexcore_miniapp/dist/index.html", "locale.js?v=r21")
+    require("nexcore_miniapp/dist/app.js", "MATCH_REPLAY_DURATION_MS=30000")
+    require("nexcore_miniapp/dist/app.js", "fireside-pass-caufield.png")
+    require("app/services/miniapp_server.py", "_mutation_serialization_middleware")
+    require("app/services/miniapp_server.py", "/api/matches/challenge")
+    require("app/services/miniapp_server.py", "_consume_match_challenge")
+    require("nexcore_miniapp/dist/app.js", "live-match-captcha/")
+    require("nexcore_miniapp/dist/app.js", "MATCH_REPLAY_DURATION_MS=30000")
+    forbid("nexcore_miniapp/dist/app.js", "Page not found")
 
     require("app/services/miniapp_server.py", "X-Telegram-Init-Data")
     require("app/services/miniapp_server.py", "hmac.compare_digest")

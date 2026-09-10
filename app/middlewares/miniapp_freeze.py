@@ -34,19 +34,19 @@ class MiniAppOnlyMiddleware(BaseMiddleware):
             if text == "/start" or text.startswith("/start "):
                 return await handler(event, data)
             await event.answer(
-                "Nexcore теперь открывается через Mini App.",
+                "NHL Cards теперь открывается через Mini App.",
                 reply_markup=build_miniapp_keyboard(),
             )
             return None
 
         if isinstance(event, CallbackQuery):
             try:
-                await event.answer("Этот раздел заморожен. Открой Nexcore Mini App.", show_alert=True)
+                await event.answer("Этот раздел заморожен. Открой NHL Cards через Mini App.", show_alert=True)
             finally:
                 message = event.message
                 if isinstance(message, Message):
                     await message.answer(
-                        "Открыть Nexcore:",
+                        "Открыть NHL Cards:",
                         reply_markup=build_miniapp_keyboard(),
                     )
             return None

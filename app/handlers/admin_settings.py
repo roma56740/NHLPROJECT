@@ -193,7 +193,7 @@ async def admin_settings_save_value(message: Message, state: FSMContext) -> None
         return
 
     if key == "matchmaking_min_wait_seconds":
-        max_wait = int(await get_setting("matchmaking_max_wait_seconds", "110") or 110)
+        max_wait = int(await get_setting("matchmaking_max_wait_seconds", "25") or 25)
         if int(value) > max_wait:
             await message.bot.send_message(
                 chat_id=chat_id,
@@ -203,7 +203,7 @@ async def admin_settings_save_value(message: Message, state: FSMContext) -> None
             return
 
     if key == "matchmaking_max_wait_seconds":
-        min_wait = int(await get_setting("matchmaking_min_wait_seconds", "90") or 90)
+        min_wait = int(await get_setting("matchmaking_min_wait_seconds", "15") or 15)
         if int(value) < min_wait:
             await message.bot.send_message(
                 chat_id=chat_id,

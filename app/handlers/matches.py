@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from datetime import datetime
 
 from aiogram import F, Router
@@ -49,6 +50,7 @@ from app.texts.matches import (
     MATCH_CANCELLED_TEXT,
     MATCH_SEARCH_TEXT,
     build_match_details_text,
+    build_match_event_live_text,
     build_match_goal_live_text,
     build_match_history_text,
     build_match_main_text,
@@ -65,8 +67,28 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 MATCHES_BUTTON_TEXT = "🏒 Играть"
-MATCH_PLAYING_SECONDS = 15
+MATCH_PLAYING_SECONDS = 30
 MATCH_QUEUE_WATCHER_INTERVAL_SECONDS = 3
+
+
+def _match_event_replay_key(event) -> tuple[int, int]:
+    period = str(getattr(event, "period_title", "") or "")
+    period_rank = {
+        "X-Factors": 0,
+        "Период 1": 1,
+        "Период 2": 2,
+        "Период 3": 3,
+        "Овертайм": 4,
+        "Буллиты": 5,
+    }.get(period, 6)
+    raw_time = str(getattr(event, "time_text", "") or "")
+    try:
+        minute, second = raw_time.split(":", 1)
+        clock = int(minute) * 60 + int(second)
+    except (ValueError, TypeError):
+        clock = 99 * 60
+    return period_rank, clock
+
 
 background_tasks: set[asyncio.Task] = set()
 match_queue_watcher_task: asyncio.Task | None = None
@@ -161,9 +183,13 @@ async def send_match_lineup_previews(*, bot, chat_id: int, result: MatchPlayResu
             own_overview = await get_lineup_overview(result.user_id)
             own_background, own_frame = await _equipped_war2_cosmetics(result.user_id)
             own_name = await _cosmetic_display_name(result.user_id, "Ты")
-            own_image = render_lineup_image(
-                own_overview, result.user_id, title=f"ТВОЙ СОСТАВ: {own_name}",
-                background_override_path=own_background, frame_override_path=own_frame,
+            own_image = await asyncio.to_thread(
+                render_lineup_image,
+                own_overview,
+                result.user_id,
+                title=f"ТВОЙ СОСТАВ: {own_name}",
+                background_override_path=own_background,
+                frame_override_path=own_frame,
             )
             try:
                 await bot.send_photo(
@@ -179,7 +205,8 @@ async def send_match_lineup_previews(*, bot, chat_id: int, result: MatchPlayResu
             opponent_overview = await get_lineup_overview(result.opponent_user_id)
             opponent_background, opponent_frame = await _equipped_war2_cosmetics(result.opponent_user_id)
             opponent_name = await _cosmetic_display_name(result.opponent_user_id, result.opponent_name)
-            opponent_image = render_lineup_image(
+            opponent_image = await asyncio.to_thread(
+                render_lineup_image,
                 opponent_overview,
                 result.opponent_user_id,
                 title=f"СОСТАВ СОПЕРНИКА: {opponent_name}",
@@ -199,7 +226,8 @@ async def send_match_lineup_previews(*, bot, chat_id: int, result: MatchPlayResu
             finally:
                 remove_render_cache_file(opponent_image)
         else:
-            opponent_image = render_opponent_lineup_placeholder(
+            opponent_image = await asyncio.to_thread(
+                render_opponent_lineup_placeholder,
                 opponent_name=result.opponent_name or "BOT",
                 opponent_ovr=result.opponent_lineup_ovr,
                 user_id=result.user_id or 0,
@@ -255,45 +283,69 @@ async def show_live_match_for_result(
     message_id: int,
     result: MatchPlayResult,
 ) -> None:
-    goal_timeline = build_goal_timeline(result)
-    total_goals = len(goal_timeline)
+    """Replay the real simulator moments over a fixed 30-second presentation.
 
-    if total_goals == 0:
+    Goal/save/power-play/hit/breakaway/X-Factor events are shown one by one.
+    To stay under Telegram edit-rate limits, very event-heavy matches retain every
+    goal and sample non-goal moments down to at most 18 visible updates. Mini App
+    itself can show every event because it has no Telegram edit-rate constraint.
+    """
+    events = sorted(list(result.events or []), key=_match_event_replay_key)
+    if not events:
         await edit_stored_message(
-            bot,
-            chat_id,
-            message_id,
-            build_match_no_goal_live_text(result),
+            bot, chat_id, message_id, build_match_no_goal_live_text(result)
         )
         await asyncio.sleep(MATCH_PLAYING_SECONDS)
         return
 
+    max_updates = 18
+    if len(events) > max_updates:
+        goals = [event for event in events if event.event_type == "GOAL"]
+        others = [event for event in events if event.event_type != "GOAL"]
+        remaining = max(0, max_updates - len(goals))
+        if remaining and len(others) > remaining:
+            step = len(others) / remaining
+            sampled = [others[min(len(others) - 1, int(i * step))] for i in range(remaining)]
+        else:
+            sampled = others[:remaining]
+        selected_ids = {id(event) for event in goals + sampled}
+        events = [event for event in events if id(event) in selected_ids]
+
     user_score = 0
     opponent_score = 0
-    interval = MATCH_PLAYING_SECONDS / (total_goals + 1)
+    interval = MATCH_PLAYING_SECONDS / (len(events) + 1)
+    started_at = time.monotonic()
 
-    for index, (side, event) in enumerate(goal_timeline, start=1):
-        await asyncio.sleep(interval)
-
-        if side == "user":
-            user_score += 1
-        else:
-            opponent_score += 1
+    for index, event in enumerate(events, start=1):
+        # Schedule against an absolute 30-second clock. Telegram edit latency is
+        # therefore absorbed by the next wait instead of extending the replay.
+        target_at = started_at + interval * index
+        await asyncio.sleep(max(0.0, target_at - time.monotonic()))
+        if event.event_type == "GOAL":
+            description = event.description.strip().lower()
+            opponent_name = (result.opponent_name or "").strip().lower()
+            opponent_goal = bool(opponent_name and description.startswith(opponent_name)) or description.startswith("соперник ")
+            if opponent_goal and opponent_score < result.opponent_score:
+                opponent_score += 1
+            elif user_score < result.user_score:
+                user_score += 1
+            elif opponent_score < result.opponent_score:
+                opponent_score += 1
 
         await edit_stored_message(
             bot,
             chat_id,
             message_id,
-            build_match_goal_live_text(
+            build_match_event_live_text(
                 result,
                 event=event,
                 user_score=user_score,
                 opponent_score=opponent_score,
-                scorer_side=side,
             ),
         )
 
-    await asyncio.sleep(interval)
+    final_at = started_at + MATCH_PLAYING_SECONDS
+    await asyncio.sleep(max(0.0, final_at - time.monotonic()))
 
 
 async def show_match_playing_and_result(

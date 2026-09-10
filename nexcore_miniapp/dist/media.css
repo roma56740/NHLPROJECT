@@ -265,3 +265,23 @@ img {
     aspect-ratio: 3 / 4;
   }
 }
+/* R21: user-provided Fireside Pass key art is native 16:9. */
+.fireside-pass-banner {
+  margin: 0 0 22px;
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+/* R21: every simulated match moment enters as a separate visual beat. */
+.match-live-moment {
+  animation: nexcore-match-moment-in .38s ease both;
+}
+
+@keyframes nexcore-match-moment-in {
+  from { opacity: 0; transform: translateY(10px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+body.reduced-motion .match-live-moment {
+  animation: none;
+}

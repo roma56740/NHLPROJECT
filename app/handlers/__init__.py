@@ -4,6 +4,7 @@ from app.handlers import navigation, inventory, mastery, release_2026_09, cosmet
 from app.middlewares.banned import BannedPlayerMiddleware
 from app.middlewares.admin_permissions import AdminPermissionMiddleware
 from app.middlewares.last_active import LastActiveMiddleware
+from app.middlewares.anti_autoclick import AntiAutoClickMiddleware
 from app.middlewares.maintenance import MaintenanceModeMiddleware
 from app.middlewares.miniapp_freeze import MiniAppOnlyMiddleware
 
@@ -15,6 +16,7 @@ def setup_routers() -> Router:
     admin_permission_middleware = AdminPermissionMiddleware()
     last_active_middleware = LastActiveMiddleware()
     miniapp_only_middleware = MiniAppOnlyMiddleware()
+    anti_autoclick_middleware = AntiAutoClickMiddleware()
 
     # ГЛОБАЛЬНЫЙ ТЕХНИЧЕСКИЙ ПЕРЕРЫВ регистрируется ПЕРВЫМ — раньше банов,
     # прав администратора и last-active — чтобы обычные пользователи блокировались
@@ -27,6 +29,10 @@ def setup_routers() -> Router:
     router.callback_query.middleware(banned_player_middleware)
     router.message.middleware(admin_permission_middleware)
     router.callback_query.middleware(admin_permission_middleware)
+    # Drop obvious duplicate/autoclick traffic before scheduling the optional
+    # last-active DB write. This keeps spam from creating needless SQLite work.
+    router.message.middleware(anti_autoclick_middleware)
+    router.callback_query.middleware(anti_autoclick_middleware)
     router.message.middleware(last_active_middleware)
     router.callback_query.middleware(last_active_middleware)
 

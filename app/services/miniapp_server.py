@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import hashlib
 import hmac
 import json
 import logging
+import secrets
 import sqlite3
 import time
 from pathlib import Path
@@ -29,6 +31,7 @@ from app.services.lineup import (
     remove_lineup_slot,
     set_lineup_card,
 )
+from app.services.match_guard import CAPTCHA_TTL_SECONDS, generate_captcha
 from app.services.matches import (
     get_match_details,
     get_match_history_page,
@@ -40,6 +43,167 @@ from app.services.users import get_player_profile_by_telegram_id
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+_ACTION_COOLDOWNS: dict[str, float] = {
+    "match_challenge": 0.8,
+    "quick_match": 31.0,
+    "box_buy": 1.5,
+    "box_open": 2.0,
+    "hero_unlock": 1.5,
+    "hero_claim": 1.0,
+    "cursed_play": 31.0,
+    "cursed_mirror": 1.5,
+    "cursed_exchange": 1.5,
+    "trade_accept": 1.0,
+    "trade_decline": 1.0,
+    "trade_cancel": 1.0,
+    "trade_create": 2.0,
+    "daily_claim": 1.0,
+    "quest_claim": 1.0,
+    "pass_purchase": 1.5,
+    "pass_claim": 1.0,
+    "achievement_claim": 1.0,
+    "craft": 2.0,
+    "lineup": 0.6,
+    "xfactor": 0.8,
+    "mastery": 1.0,
+}
+_action_guard_state: dict[tuple[int, str], float] = {}
+_mutation_inflight: set[int] = set()
+_match_challenges: dict[int, dict[str, object]] = {}
+
+
+
+@web.middleware
+async def _mutation_serialization_middleware(request: web.Request, handler):
+    """Serialize authenticated Mini App writes per player.
+
+    Client debouncing improves UX, but economy safety must be server-side. If an
+    autoclicker fires several POST requests while the first transaction is still
+    running, only the first is allowed to enter gameplay/economy code.
+    """
+    if request.method != "POST":
+        return await handler(request)
+    telegram_id = _request_telegram_id(request)
+    if telegram_id is None:
+        return await handler(request)
+    telegram_id = int(telegram_id)
+    if telegram_id in _mutation_inflight:
+        return web.json_response(
+            {"ok": False, "error": "action_in_progress", "message": "Предыдущее действие ещё выполняется."},
+            status=429,
+        )
+    _mutation_inflight.add(telegram_id)
+    try:
+        return await handler(request)
+    finally:
+        _mutation_inflight.discard(telegram_id)
+
+def _new_match_challenge(user_id: int, mode: str) -> dict[str, object]:
+    captcha = generate_captcha()
+    token = secrets.token_urlsafe(18)
+    expires_at = time.monotonic() + float(CAPTCHA_TTL_SECONDS)
+    record = {
+        "challenge_id": token,
+        "correct": str(captcha.correct),
+        "prompt": str(captcha.prompt),
+        "options": [str(item) for item in captcha.options],
+        "mode": str(mode),
+        "expires_at": expires_at,
+    }
+    _match_challenges[int(user_id)] = record
+    # Bound stale process-local challenges. They are only anti-autoclick material,
+    # never game/economy state, so pruning them has no persistence effect.
+    if len(_match_challenges) > 20_000:
+        now = time.monotonic()
+        expired = [uid for uid, item in _match_challenges.items() if float(item.get("expires_at", 0.0)) <= now]
+        for uid in expired[:15_000]:
+            _match_challenges.pop(uid, None)
+    return record
+
+
+def _public_match_challenge(record: dict[str, object]) -> dict[str, object]:
+    # The prompt itself tells a human which option to press; returning that instruction
+    # does not reveal anything beyond the visible challenge. Keep the source text in
+    # English so the Mini App localization layer can render either RU or EN.
+    target = str(record.get("correct") or "")
+    return {
+        "challenge_id": str(record.get("challenge_id") or ""),
+        "prompt": f"Press number {target} to start the match",
+        "options": list(record.get("options") or []),
+        "ttl_seconds": int(CAPTCHA_TTL_SECONDS),
+        "mode": str(record.get("mode") or "normal"),
+    }
+
+
+def _consume_match_challenge(
+    user_id: int, challenge_id: object, answer: object, expected_mode: str
+) -> str | None:
+    record = _match_challenges.pop(int(user_id), None)
+    if record is None:
+        return "captcha_missing"
+    if float(record.get("expires_at", 0.0)) <= time.monotonic():
+        return "captcha_expired"
+    if not secrets.compare_digest(str(record.get("challenge_id") or ""), str(challenge_id or "")):
+        return "captcha_invalid"
+    if not secrets.compare_digest(str(record.get("mode") or "normal"), str(expected_mode)):
+        return "captcha_wrong_mode"
+    if not secrets.compare_digest(str(record.get("correct") or ""), str(answer or "")):
+        return "captcha_wrong"
+    return None
+
+
+async def api_match_challenge(request: web.Request) -> web.Response:
+    _telegram_id, profile, error = await _auth_player(request)
+    if error is not None:
+        return error
+    guard = _guard_response(profile, "match_challenge")
+    if guard is not None:
+        return guard
+    mode = str(request.query.get("mode") or "normal").strip().lower()
+    if mode not in {"normal", "cursed"}:
+        return web.json_response({"ok": False, "error": "invalid_match_mode"}, status=400)
+    # Requiring this one-time challenge BEFORE any Mini App match-start endpoint is
+    # the actual anti-autoclick gate. No match/simulation is created here.
+    record = _new_match_challenge(int(profile.id), mode)
+    return web.json_response({"ok": True, "challenge": _public_match_challenge(record)})
+
+
+def _action_guard(user_id: int, action: str) -> str | None:
+    cooldown = float(_ACTION_COOLDOWNS.get(action, 0.0))
+    if cooldown <= 0:
+        return None
+    now = time.monotonic()
+    key = (int(user_id), action)
+    unlock_at = _action_guard_state.get(key, 0.0)
+    if unlock_at > now:
+        wait_for = max(0.1, unlock_at - now)
+        return f"too_fast:{action}:{wait_for:.1f}"
+    _action_guard_state[key] = now + cooldown
+    if len(_action_guard_state) > 30_000:
+        expired = [item for item, until in _action_guard_state.items() if until <= now]
+        for item in expired[:20_000]:
+            _action_guard_state.pop(item, None)
+    return None
+
+
+def _guard_response(profile, action: str):
+    message = _action_guard(int(profile.id), action)
+    if message is None:
+        return None
+    return web.json_response(
+        {"ok": False, "error": message, "message": "Слишком часто. Подожди немного."},
+        status=429,
+    )
+
+
+def _run_async_service(func, *args, **kwargs):
+    """Run one DB-heavy async service on its own worker-thread event loop."""
+    return asyncio.run(func(*args, **kwargs))
+
+
+async def _threaded_async(func, *args, **kwargs):
+    return await asyncio.to_thread(_run_async_service, func, *args, **kwargs)
 
 _ALIAS_ROOTS = {
     "heroes": ROOT / "assets" / "release" / "heroes",
@@ -354,7 +518,7 @@ async def _auth_player(request: web.Request):
         return None, None, web.json_response(
             {"ok": False, "error": "telegram_auth_required"}, status=401
         )
-    profile = await get_player_profile_by_telegram_id(telegram_id)
+    profile = await _threaded_async(get_player_profile_by_telegram_id, telegram_id)
     if profile is None:
         return telegram_id, None, web.json_response(
             {"ok": False, "error": "profile_not_found"}, status=404
@@ -366,7 +530,7 @@ async def _auth_player(request: web.Request):
     return telegram_id, profile, None
 
 
-async def _load_all_cards(user_id: int) -> list[sqlite3.Row]:
+def _load_all_cards(user_id: int) -> list[sqlite3.Row]:
     # The paginated PlayerCardListItem intentionally exposes only list fields.
     # Mini App needs the full owned-copy state (player_key, lineup slot, salary,
     # lock/source metadata) for Mastery, lineup badges and card details, so load
@@ -469,6 +633,62 @@ def _serialize_mastery(progress_items) -> list[dict[str, object]]:
     return result
 
 
+def _load_state_bundle(user_id: int, telegram_id: int, is_creator: bool) -> dict[str, object]:
+    """Load the large Mini App snapshot off the aiohttp event loop.
+
+    Most legacy service functions are async in signature but use synchronous
+    sqlite3 internally. Running the complete snapshot on one worker thread keeps
+    other buttons/HTTP requests responsive instead of letting one /api/state call
+    monopolize the event loop.
+    """
+    all_cards = _load_all_cards(user_id)
+    card_ids = [int(card["id"]) for card in all_cards]
+    xfactor_items, _xf_page, _xf_pages, xf_total = xfactors.get_user_xfactor_inventory(
+        user_id, page=1, per_page=500
+    )
+    installed = xfactors.get_installed_xfactor_codes(card_ids)
+    mastery = mastery_service.get_user_mastery_overview(user_id)
+    pass_status = _serialize_pass_status(release.pass_status(telegram_id))
+    boxes = release.get_box_inventory(telegram_id)
+    heroes_state = release.hero_paths(telegram_id)
+    cursed = release.cursed_state(telegram_id)
+    achievements = release.achievement_status(telegram_id)
+    fireside_recipes = release.fireside_recipes(telegram_id)
+    xfactor_catalog = _load_xfactor_catalog()
+
+    async def load_async_services() -> dict[str, object]:
+        daily = await daily_login.get_daily_status(user_id)
+        quest_main = await quests.get_quest_main_info(telegram_id)
+        quest_daily = await quests.get_user_quests(telegram_id, "daily")
+        quest_seasonal = await quests.get_user_quests(telegram_id, "seasonal")
+        history = await get_match_history_page(user_id, page=1, per_page=30)
+        incoming = await community.get_trade_offers_page(mode="incoming", user_id=user_id, page=1, per_page=25)
+        my_trades = await community.get_trade_offers_page(mode="my", user_id=user_id, page=1, per_page=25)
+        market = await community.get_trade_offers_page(mode="market", user_id=user_id, page=1, per_page=25)
+        players_page = await community.get_players_page(page=1, per_page=25)
+        clans_page = await community.get_clans_page(page=1, per_page=25)
+        user_clan = await community.get_user_clan(user_id)
+        creator_panel = await creators.get_panel(user_id) if is_creator else None
+        match_info = await get_match_main_info(telegram_id)
+        lineup = await get_lineup_overview(user_id)
+        return {
+            "daily": daily, "quest_main": quest_main, "quest_daily": quest_daily,
+            "quest_seasonal": quest_seasonal, "history": history, "incoming": incoming,
+            "my_trades": my_trades, "market": market, "players_page": players_page,
+            "clans_page": clans_page, "user_clan": user_clan, "creator_panel": creator_panel,
+            "match_info": match_info, "lineup": lineup,
+        }
+
+    async_data = asyncio.run(load_async_services())
+    return {
+        "all_cards": all_cards, "xfactor_items": xfactor_items, "xf_total": xf_total,
+        "installed": installed, "mastery": mastery, "pass_status": pass_status,
+        "boxes": boxes, "heroes_state": heroes_state, "cursed": cursed,
+        "achievements": achievements, "fireside_recipes": fireside_recipes,
+        "xfactor_catalog": xfactor_catalog, **async_data,
+    }
+
+
 def _serialize_pass_status(status) -> dict | None:
     if status is None:
         return None
@@ -498,7 +718,7 @@ async def api_account(request: web.Request) -> web.Response:
     telegram_id, _profile, error = await _auth_player(request)
     if error is not None:
         return error
-    status = release.pass_status(int(telegram_id))
+    status = await asyncio.to_thread(release.pass_status, int(telegram_id))
     if status is None:
         return web.json_response({"ok": False, "error": "profile_not_found"}, status=404)
     return web.json_response(
@@ -516,9 +736,9 @@ async def api_bootstrap(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
-    match_info = await get_match_main_info(profile.telegram_id)
-    lineup = await get_lineup_overview(profile.id)
-    cards_page = await get_player_cards_page(profile.id, page=1, per_page=12)
+    match_info = await _threaded_async(get_match_main_info, profile.telegram_id)
+    lineup = await _threaded_async(get_lineup_overview, profile.id)
+    cards_page = await _threaded_async(get_player_cards_page, profile.id, page=1, per_page=12)
     return web.json_response(
         {
             "ok": True,
@@ -541,58 +761,33 @@ async def api_state(request: web.Request) -> web.Response:
     if error is not None:
         return error
 
-    all_cards = await _load_all_cards(profile.id)
-    card_ids = [int(card["id"]) for card in all_cards]
-    xfactor_items, _xf_page, _xf_pages, xf_total = xfactors.get_user_xfactor_inventory(
-        profile.id, page=1, per_page=500
+    data = await asyncio.to_thread(
+        _load_state_bundle,
+        int(profile.id),
+        int(telegram_id),
+        bool(getattr(profile, "is_creator", False)),
     )
-    installed = xfactors.get_installed_xfactor_codes(card_ids)
-    mastery = mastery_service.get_user_mastery_overview(profile.id)
-    pass_status = _serialize_pass_status(release.pass_status(int(telegram_id)))
-    boxes = release.get_box_inventory(int(telegram_id))
-    heroes_state = release.hero_paths(int(telegram_id))
-    cursed = release.cursed_state(int(telegram_id))
-    achievements = release.achievement_status(int(telegram_id))
-    fireside_recipes = release.fireside_recipes(int(telegram_id))
-    daily = await daily_login.get_daily_status(profile.id)
-    quest_main = await quests.get_quest_main_info(int(telegram_id))
-    quest_daily = await quests.get_user_quests(int(telegram_id), "daily")
-    quest_seasonal = await quests.get_user_quests(int(telegram_id), "seasonal")
-    history = await get_match_history_page(profile.id, page=1, per_page=30)
-    incoming = await community.get_trade_offers_page(
-        mode="incoming", user_id=profile.id, page=1, per_page=25
-    )
-    my_trades = await community.get_trade_offers_page(
-        mode="my", user_id=profile.id, page=1, per_page=25
-    )
-    market = await community.get_trade_offers_page(
-        mode="market", user_id=profile.id, page=1, per_page=25
-    )
-    players_page = await community.get_players_page(page=1, per_page=25)
-    clans_page = await community.get_clans_page(page=1, per_page=25)
-    user_clan = await community.get_user_clan(profile.id)
-    creator_panel = None
-    if bool(getattr(profile, "is_creator", False)):
-        creator_panel = await creators.get_panel(profile.id)
+    all_cards = data["all_cards"]
+    installed = data["installed"]
 
     return web.json_response(
         {
             "ok": True,
             "profile": _serialize_profile(profile),
-            "match": _serialize_match_info(await get_match_main_info(int(telegram_id))),
-            "lineup": _serialize_lineup(await get_lineup_overview(profile.id)),
+            "match": _serialize_match_info(data["match_info"]),
+            "lineup": _serialize_lineup(data["lineup"]),
             "cards": [_serialize_card(card) for card in all_cards],
             "lineup_slot_order": list(LINEUP_SLOT_ORDER),
             "xfactors": {
-                "inventory": _jsonify(xfactor_items),
-                "catalog": _jsonify(_load_xfactor_catalog()),
+                "inventory": _jsonify(data["xfactor_items"]),
+                "catalog": _jsonify(data["xfactor_catalog"]),
                 "installed_by_user_card_id": {str(k): v for k, v in installed.items()},
-                "total_types": int(xf_total),
+                "total_types": int(data["xf_total"]),
                 "max_per_card": int(xfactors.MAX_XFACTORS_PER_CARD),
                 "quicksell_coins": int(xfactors.XFACTOR_QUICKSELL_COINS),
             },
-            "mastery": _serialize_mastery(mastery),
-            "fireside_pass": pass_status,
+            "mastery": _serialize_mastery(data["mastery"]),
+            "fireside_pass": data["pass_status"],
             "energy_packages": [
                 {
                     "quantity": int(quantity),
@@ -601,29 +796,29 @@ async def api_state(request: web.Request) -> web.Response:
                 }
                 for quantity, discount in release.ENERGY_TIERS
             ],
-            "boxes": _jsonify(boxes),
-            "heroes": _jsonify(heroes_state),
-            "cursed_mirror": _jsonify(cursed),
-            "achievements": _jsonify(achievements),
-            "fireside_craft": _jsonify(fireside_recipes),
-            "daily": _jsonify(daily),
+            "boxes": _jsonify(data["boxes"]),
+            "heroes": _jsonify(data["heroes_state"]),
+            "cursed_mirror": _jsonify(data["cursed"]),
+            "achievements": _jsonify(data["achievements"]),
+            "fireside_craft": _jsonify(data["fireside_recipes"]),
+            "daily": _jsonify(data["daily"]),
             "quests": {
-                "summary": _jsonify(quest_main),
-                "daily": _jsonify(quest_daily),
-                "seasonal": _jsonify(quest_seasonal),
+                "summary": _jsonify(data["quest_main"]),
+                "daily": _jsonify(data["quest_daily"]),
+                "seasonal": _jsonify(data["quest_seasonal"]),
             },
-            "history": _jsonify(history),
+            "history": _jsonify(data["history"]),
             "trades": {
-                "incoming": _jsonify(incoming),
-                "my": _jsonify(my_trades),
-                "market": _jsonify(market),
+                "incoming": _jsonify(data["incoming"]),
+                "my": _jsonify(data["my_trades"]),
+                "market": _jsonify(data["market"]),
             },
             "community": {
-                "players": _jsonify(players_page),
-                "clans": _jsonify(clans_page),
-                "my_clan": _jsonify(user_clan),
+                "players": _jsonify(data["players_page"]),
+                "clans": _jsonify(data["clans_page"]),
+                "my_clan": _jsonify(data["user_clan"]),
             },
-            "creator": _jsonify(creator_panel),
+            "creator": _jsonify(data["creator_panel"]),
         }
     )
 
@@ -640,7 +835,8 @@ async def api_cards(request: web.Request) -> web.Response:
     search = (request.query.get("search") or "").strip() or None
     position = (request.query.get("position") or "").strip() or None
     rarity = (request.query.get("rarity") or "").strip() or None
-    cards_page = await get_player_cards_page(
+    cards_page = await _threaded_async(
+        get_player_cards_page,
         profile.id,
         page=page,
         per_page=per_page,
@@ -670,12 +866,12 @@ async def api_card_details(request: web.Request) -> web.Response:
     user_card_id = _positive_int(request.match_info.get("user_card_id"))
     if user_card_id is None:
         return web.json_response({"ok": False, "error": "invalid_card_id"}, status=400)
-    card = await get_player_card_profile(user_card_id, telegram_id=int(telegram_id))
+    card = await _threaded_async(get_player_card_profile, user_card_id, telegram_id=int(telegram_id))
     if card is None:
         return web.json_response({"ok": False, "error": "card_not_found"}, status=404)
-    installed = xfactors.get_installed_xfactors(user_card_id)
-    mastery = mastery_service.get_mastery_progress_for_user_card(
-        card.user_id, user_card_id
+    installed = await asyncio.to_thread(xfactors.get_installed_xfactors, user_card_id)
+    mastery = await asyncio.to_thread(
+        mastery_service.get_mastery_progress_for_user_card, card.user_id, user_card_id
     )
     return web.json_response(
         {
@@ -691,12 +887,15 @@ async def api_lineup_set(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "lineup")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     user_card_id = _positive_int(body.get("user_card_id"))
     slot_code = str(body.get("slot_code") or "").strip().upper()
     if user_card_id is None or not slot_code:
         return web.json_response({"ok": False, "error": "invalid_lineup_request"}, status=400)
-    result = await set_lineup_card(profile.id, slot_code, user_card_id)
+    result = await _threaded_async(set_lineup_card, profile.id, slot_code, user_card_id)
     return _action_response(result)
 
 
@@ -704,31 +903,43 @@ async def api_lineup_remove(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "lineup")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     slot_code = str(body.get("slot_code") or "").strip().upper()
     if not slot_code:
         return web.json_response({"ok": False, "error": "invalid_lineup_request"}, status=400)
-    return _action_response(await remove_lineup_slot(profile.id, slot_code))
+    return _action_response(await _threaded_async(remove_lineup_slot, profile.id, slot_code))
 
 
 async def api_lineup_clear(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
-    return _action_response(await clear_lineup(profile.id))
+    guard = _guard_response(profile, "lineup")
+    if guard is not None:
+        return guard
+    return _action_response(await _threaded_async(clear_lineup, profile.id))
 
 
 async def api_lineup_auto(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
-    return _action_response(await auto_fill_best_lineup(profile.id))
+    guard = _guard_response(profile, "lineup")
+    if guard is not None:
+        return guard
+    return _action_response(await _threaded_async(auto_fill_best_lineup, profile.id))
 
 
 async def api_xfactor_install(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "xfactor")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     user_card_id = _positive_int(body.get("user_card_id"))
     code = str(body.get("code") or "").strip()
@@ -740,7 +951,7 @@ async def api_xfactor_install(request: web.Request) -> web.Response:
             return web.json_response({"ok": False, "error": "invalid_replace_slot"}, status=400)
     if user_card_id is None or not code or len(code) > 128:
         return web.json_response({"ok": False, "error": "invalid_xfactor_request"}, status=400)
-    result = xfactors.install_xfactor(profile.id, user_card_id, code, replace_slot=replace_slot)
+    result = await asyncio.to_thread(xfactors.install_xfactor, profile.id, user_card_id, code, replace_slot=replace_slot)
     return _action_response(result)
 
 
@@ -748,13 +959,16 @@ async def api_xfactor_remove(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "xfactor")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     user_card_id = _positive_int(body.get("user_card_id"))
     slot_no = _positive_int(body.get("slot_no"), maximum=3)
     if user_card_id is None or slot_no is None:
         return web.json_response({"ok": False, "error": "invalid_xfactor_request"}, status=400)
     return _action_response(
-        xfactors.remove_installed_xfactor(profile.id, user_card_id, slot_no)
+        await asyncio.to_thread(xfactors.remove_installed_xfactor, profile.id, user_card_id, slot_no)
     )
 
 
@@ -762,13 +976,16 @@ async def api_mastery_claim(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "mastery")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     player_key = str(body.get("player_key") or "").strip()
     tier_points = _positive_int(body.get("tier_points"), maximum=1_000_000)
     if not player_key or tier_points is None:
         return web.json_response({"ok": False, "error": "invalid_mastery_request"}, status=400)
     return _action_response(
-        mastery_service.claim_mastery_reward(profile.id, player_key, tier_points)
+        await asyncio.to_thread(mastery_service.claim_mastery_reward, profile.id, player_key, tier_points)
     )
 
 
@@ -776,7 +993,10 @@ async def api_daily_claim(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
-    result, reason = await daily_login.claim_daily(profile.id)
+    guard = _guard_response(profile, "daily_claim")
+    if guard is not None:
+        return guard
+    result, reason = await _threaded_async(daily_login.claim_daily, profile.id)
     if result is None:
         message = "Daily reward already claimed." if reason == "already" else "Daily reward is unavailable."
         return web.json_response(
@@ -787,22 +1007,28 @@ async def api_daily_claim(request: web.Request) -> web.Response:
 
 
 async def api_quest_claim(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "quest_claim")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     progress_id = _positive_int(body.get("progress_id"))
     if progress_id is None:
         return web.json_response({"ok": False, "error": "invalid_progress_id"}, status=400)
-    return _action_response(await quests.claim_quest_reward(int(telegram_id), progress_id))
+    return _action_response(await _threaded_async(quests.claim_quest_reward, int(telegram_id), progress_id))
 
 
 async def api_purchase_fireside_pass(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
-    ok, message = release.purchase_fireside_pass(int(telegram_id))
-    status = release.pass_status(int(telegram_id))
+    guard = _guard_response(profile, "pass_purchase")
+    if guard is not None:
+        return guard
+    ok, message = await asyncio.to_thread(release.purchase_fireside_pass, int(telegram_id))
+    status = await asyncio.to_thread(release.pass_status, int(telegram_id))
     return web.json_response(
         {
             "ok": ok,
@@ -814,97 +1040,121 @@ async def api_purchase_fireside_pass(request: web.Request) -> web.Response:
 
 
 async def api_claim_fireside_pass(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "pass_claim")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     level = _positive_int(body.get("level"), maximum=int(release.PASS_LEVELS))
     track = str(body.get("track") or "").strip().lower()
     if level is None or track not in {"free", "premium"}:
         return web.json_response({"ok": False, "error": "invalid_pass_claim"}, status=400)
-    ok, message = release.claim_pass_reward(int(telegram_id), level, track)
+    ok, message = await asyncio.to_thread(release.claim_pass_reward, int(telegram_id), level, track)
+    pass_status = await asyncio.to_thread(release.pass_status, int(telegram_id))
     return web.json_response(
-        {"ok": ok, "message": message, "fireside_pass": _serialize_pass_status(release.pass_status(int(telegram_id)))},
+        {"ok": ok, "message": message, "fireside_pass": _serialize_pass_status(pass_status)},
         status=200 if ok else 400,
     )
 
 
 async def api_box_buy(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "box_buy")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     box_code = str(body.get("box_code") or "").strip()
     if not box_code or len(box_code) > 128:
         return web.json_response({"ok": False, "error": "invalid_box_code"}, status=400)
-    ok, message = release.buy_box(int(telegram_id), box_code)
+    ok, message = await asyncio.to_thread(release.buy_box, int(telegram_id), box_code)
+    boxes = await asyncio.to_thread(release.get_box_inventory, int(telegram_id))
     return web.json_response(
-        {"ok": ok, "message": message, "boxes": _jsonify(release.get_box_inventory(int(telegram_id)))},
+        {"ok": ok, "message": message, "boxes": _jsonify(boxes)},
         status=200 if ok else 400,
     )
 
 
 async def api_box_open(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "box_open")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     box_code = str(body.get("box_code") or "").strip()
     if not box_code or len(box_code) > 128:
         return web.json_response({"ok": False, "error": "invalid_box_code"}, status=400)
-    ok, message, rewards = release.open_box(int(telegram_id), box_code)
+    ok, message, rewards = await asyncio.to_thread(release.open_box, int(telegram_id), box_code)
+    boxes = await asyncio.to_thread(release.get_box_inventory, int(telegram_id))
     return web.json_response(
         {
             "ok": ok,
             "message": message,
             "rewards": _jsonify(rewards),
-            "boxes": _jsonify(release.get_box_inventory(int(telegram_id))),
+            "boxes": _jsonify(boxes),
         },
         status=200 if ok else 400,
     )
 
 
 async def api_hero_unlock(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "hero_unlock")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     hero_key = str(body.get("hero_key") or "").strip()
     if not hero_key or len(hero_key) > 64:
         return web.json_response({"ok": False, "error": "invalid_hero_key"}, status=400)
-    ok, message = release.unlock_hero(int(telegram_id), hero_key)
+    ok, message = await asyncio.to_thread(release.unlock_hero, int(telegram_id), hero_key)
+    heroes = await asyncio.to_thread(release.hero_paths, int(telegram_id))
     return web.json_response(
-        {"ok": ok, "message": message, "heroes": _jsonify(release.hero_paths(int(telegram_id)))},
+        {"ok": ok, "message": message, "heroes": _jsonify(heroes)},
         status=200 if ok else 400,
     )
 
 
 async def api_hero_claim(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "hero_claim")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     hero_key = str(body.get("hero_key") or "").strip()
     if not hero_key or len(hero_key) > 64:
         return web.json_response({"ok": False, "error": "invalid_hero_key"}, status=400)
-    ok, message = release.claim_hero_100(int(telegram_id), hero_key)
+    ok, message = await asyncio.to_thread(release.claim_hero_100, int(telegram_id), hero_key)
+    heroes = await asyncio.to_thread(release.hero_paths, int(telegram_id))
     return web.json_response(
-        {"ok": ok, "message": message, "heroes": _jsonify(release.hero_paths(int(telegram_id)))},
+        {"ok": ok, "message": message, "heroes": _jsonify(heroes)},
         status=200 if ok else 400,
     )
 
 
 async def api_achievement_claim(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "achievement_claim")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     code = str(body.get("code") or "").strip()
     if not code or len(code) > 128:
         return web.json_response({"ok": False, "error": "invalid_achievement_code"}, status=400)
-    ok, message = release.claim_achievement(int(telegram_id), code)
+    ok, message = await asyncio.to_thread(release.claim_achievement, int(telegram_id), code)
+    achievements = await asyncio.to_thread(release.achievement_status, int(telegram_id))
     return web.json_response(
-        {"ok": ok, "message": message, "achievements": _jsonify(release.achievement_status(int(telegram_id)))},
+        {"ok": ok, "message": message, "achievements": _jsonify(achievements)},
         status=200 if ok else 400,
     )
 
@@ -916,41 +1166,68 @@ async def api_fireside_craft_materials(request: web.Request) -> web.Response:
     target_card_id = _positive_int(request.query.get("target_card_id"))
     if target_card_id is None:
         return web.json_response({"ok": False, "error": "invalid_target_card_id"}, status=400)
-    materials = release.fireside_material_cards(int(telegram_id), target_card_id)
+    materials = await asyncio.to_thread(release.fireside_material_cards, int(telegram_id), target_card_id)
     return web.json_response({"ok": True, "materials": _jsonify(materials)})
 
 
 async def api_fireside_craft(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "craft")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     target_card_id = _positive_int(body.get("target_card_id"))
     material_user_card_id = _positive_int(body.get("material_user_card_id"))
     if target_card_id is None or material_user_card_id is None:
         return web.json_response({"ok": False, "error": "invalid_craft_request"}, status=400)
-    ok, message = release.craft_fireside(int(telegram_id), target_card_id, material_user_card_id)
+    ok, message = await asyncio.to_thread(release.craft_fireside, int(telegram_id), target_card_id, material_user_card_id)
+    recipes = await asyncio.to_thread(release.fireside_recipes, int(telegram_id))
     return web.json_response(
-        {"ok": ok, "message": message, "fireside_craft": _jsonify(release.fireside_recipes(int(telegram_id)))},
+        {"ok": ok, "message": message, "fireside_craft": _jsonify(recipes)},
         status=200 if ok else 400,
     )
 
 
 async def api_cursed_play(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
-    ok, message, result = await release.play_cursed_match(int(telegram_id))
+    body = await _json_body(request)
+    challenge_error = _consume_match_challenge(
+        int(profile.id), body.get("challenge_id"), body.get("answer"), "cursed"
+    )
+    if challenge_error is not None:
+        messages = {
+            "captcha_missing": "Complete the pre-match check first.",
+            "captcha_expired": "The pre-match check expired. Try again.",
+            "captcha_invalid": "The pre-match check is invalid. Try again.",
+            "captcha_wrong": "Wrong answer. Complete the pre-match check again.",
+            "captcha_wrong_mode": "This pre-match check belongs to another mode. Try again.",
+        }
+        return web.json_response(
+            {"ok": False, "error": challenge_error, "message": messages[challenge_error]},
+            status=403,
+        )
+    guard = _guard_response(profile, "cursed_play")
+    if guard is not None:
+        return guard
+    ok, message, result = await _threaded_async(release.play_cursed_match, int(telegram_id))
+    cursed_state = await asyncio.to_thread(release.cursed_state, int(telegram_id))
     return web.json_response(
-        {"ok": ok, "message": message, "result": _jsonify(result), "cursed_mirror": _jsonify(release.cursed_state(int(telegram_id)))},
+        {"ok": ok, "message": message, "result": _jsonify(result), "cursed_mirror": _jsonify(cursed_state)},
         status=200 if ok else 400,
     )
 
 
 async def api_cursed_mirror(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "cursed_mirror")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     match_id = _positive_int(body.get("match_id"))
     source_card_id = _positive_int(body.get("source_card_id"))
@@ -962,19 +1239,22 @@ async def api_cursed_mirror(request: web.Request) -> web.Response:
     if body.get("replace_id") is not None and replace_id is None:
         return web.json_response({"ok": False, "error": "invalid_replace_id"}, status=400)
     if replace_id is None:
-        ok, message = release.add_mirror_card(int(telegram_id), match_id, source_card_id)
+        ok, message = await asyncio.to_thread(release.add_mirror_card, int(telegram_id), match_id, source_card_id)
     else:
-        ok, message = release.add_mirror_card(int(telegram_id), match_id, source_card_id, replace_id)
+        ok, message = await asyncio.to_thread(release.add_mirror_card, int(telegram_id), match_id, source_card_id, replace_id)
     return web.json_response(
-        {"ok": ok, "message": message, "cursed_mirror": _jsonify(release.cursed_state(int(telegram_id)))},
+        {"ok": ok, "message": message, "cursed_mirror": _jsonify(await asyncio.to_thread(release.cursed_state, int(telegram_id)))},
         status=200 if ok else 400,
     )
 
 
 async def api_cursed_exchange(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "cursed_exchange")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     choice = str(body.get("choice") or "").strip().lower()
     player_key = {
@@ -985,18 +1265,40 @@ async def api_cursed_exchange(request: web.Request) -> web.Response:
     }.get(choice)
     if player_key is None:
         return web.json_response({"ok": False, "error": "invalid_cursed_choice"}, status=400)
-    ok, message = release.exchange_cursed_collectibles(int(telegram_id), player_key)
+    ok, message = await asyncio.to_thread(release.exchange_cursed_collectibles, int(telegram_id), player_key)
     return web.json_response(
-        {"ok": ok, "message": message, "cursed_mirror": _jsonify(release.cursed_state(int(telegram_id)))},
+        {"ok": ok, "message": message, "cursed_mirror": _jsonify(await asyncio.to_thread(release.cursed_state, int(telegram_id)))},
         status=200 if ok else 400,
     )
 
 
 async def api_quick_match(request: web.Request) -> web.Response:
-    telegram_id, _profile, error = await _auth_player(request)
+    telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
-    result = await play_quick_match(int(telegram_id))
+    # Anti-autoclick verification is mandatory and consumed BEFORE any gameplay
+    # service is entered. Replays, duplicate POSTs and direct calls without the
+    # challenge therefore cannot start a match.
+    body = await _json_body(request)
+    challenge_error = _consume_match_challenge(
+        int(profile.id), body.get("challenge_id"), body.get("answer"), "normal"
+    )
+    if challenge_error is not None:
+        messages = {
+            "captcha_missing": "Complete the pre-match check first.",
+            "captcha_expired": "The pre-match check expired. Try again.",
+            "captcha_invalid": "The pre-match check is invalid. Try again.",
+            "captcha_wrong": "Wrong answer. Complete the pre-match check again.",
+            "captcha_wrong_mode": "This pre-match check belongs to another mode. Try again.",
+        }
+        return web.json_response(
+            {"ok": False, "error": challenge_error, "message": messages[challenge_error]},
+            status=403,
+        )
+    guard = _guard_response(profile, "quick_match")
+    if guard is not None:
+        return guard
+    result = await _threaded_async(play_quick_match, int(telegram_id))
     return _action_response(result)
 
 
@@ -1010,7 +1312,7 @@ async def api_history(request: web.Request) -> web.Response:
     except ValueError:
         return web.json_response({"ok": False, "error": "invalid_pagination"}, status=400)
     return web.json_response(
-        {"ok": True, "history": _jsonify(await get_match_history_page(profile.id, page=page, per_page=per_page))}
+        {"ok": True, "history": _jsonify(await _threaded_async(get_match_history_page, profile.id, page=page, per_page=per_page))}
     )
 
 
@@ -1021,7 +1323,7 @@ async def api_history_detail(request: web.Request) -> web.Response:
     match_id = _positive_int(request.match_info.get("match_id"))
     if match_id is None:
         return web.json_response({"ok": False, "error": "invalid_match_id"}, status=400)
-    detail = await get_match_details(profile.id, match_id)
+    detail = await _threaded_async(get_match_details, profile.id, match_id)
     if detail is None:
         return web.json_response({"ok": False, "error": "match_not_found"}, status=404)
     return web.json_response({"ok": True, "match": _jsonify(detail)})
@@ -1038,8 +1340,8 @@ async def api_trades(request: web.Request) -> web.Response:
         page = max(1, int(request.query.get("page", "1") or 1))
     except ValueError:
         return web.json_response({"ok": False, "error": "invalid_pagination"}, status=400)
-    result = await community.get_trade_offers_page(
-        mode=mode, user_id=profile.id, page=page, per_page=25
+    result = await _threaded_async(
+        community.get_trade_offers_page, mode=mode, user_id=profile.id, page=page, per_page=25
     )
     return web.json_response({"ok": True, "trades": _jsonify(result)})
 
@@ -1051,7 +1353,7 @@ async def api_trade_detail(request: web.Request) -> web.Response:
     offer_id = _positive_int(request.match_info.get("offer_id"))
     if offer_id is None:
         return web.json_response({"ok": False, "error": "invalid_offer_id"}, status=400)
-    offer = await community.get_trade_offer_profile(offer_id)
+    offer = await _threaded_async(community.get_trade_offer_profile, offer_id)
     if offer is None:
         return web.json_response({"ok": False, "error": "trade_not_found"}, status=404)
     target_id = getattr(offer, "target_user_id", None)
@@ -1065,12 +1367,12 @@ async def api_trade_options(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
-    own_cards = await community.get_available_user_cards_page(
-        user_id=profile.id, page=1, per_page=100
+    own_cards = await _threaded_async(
+        community.get_available_user_cards_page, user_id=profile.id, page=1, per_page=100
     )
-    wanted_cards = await community.get_card_choices_page(page=1, per_page=100, user_id=profile.id)
-    targets = await community.get_direct_trade_players_page(
-        user_id=profile.id, page=1, per_page=100
+    wanted_cards = await _threaded_async(community.get_card_choices_page, page=1, per_page=100, user_id=profile.id)
+    targets = await _threaded_async(
+        community.get_direct_trade_players_page, user_id=profile.id, page=1, per_page=100
     )
     return web.json_response(
         {
@@ -1086,6 +1388,9 @@ async def api_trade_create(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "trade_create")
+    if guard is not None:
+        return guard
     body = await _json_body(request)
     offered_cards = _id_list(body.get("offered_user_card_ids"))
     offered_cosmetics = _id_list(body.get("offered_user_cosmetic_ids"))
@@ -1106,7 +1411,7 @@ async def api_trade_create(request: web.Request) -> web.Response:
     if wanted_amount is None:
         return web.json_response({"ok": False, "error": "invalid_currency_amount"}, status=400)
     currency_code = str(body.get("wanted_currency_code") or "").strip() or None
-    result = await community.create_trade_offer(
+    result = await _threaded_async(community.create_trade_offer,
         creator_user_id=profile.id,
         offered_user_card_ids=offered_cards,
         wanted_type=wanted_type,
@@ -1125,30 +1430,39 @@ async def api_trade_accept(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "trade_accept")
+    if guard is not None:
+        return guard
     offer_id = _positive_int(request.match_info.get("offer_id"))
     if offer_id is None:
         return web.json_response({"ok": False, "error": "invalid_offer_id"}, status=400)
-    return _action_response(await community.accept_trade_offer(offer_id, profile.id))
+    return _action_response(await _threaded_async(community.accept_trade_offer, offer_id, profile.id))
 
 
 async def api_trade_decline(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "trade_decline")
+    if guard is not None:
+        return guard
     offer_id = _positive_int(request.match_info.get("offer_id"))
     if offer_id is None:
         return web.json_response({"ok": False, "error": "invalid_offer_id"}, status=400)
-    return _action_response(await community.decline_trade_offer(offer_id, profile.id))
+    return _action_response(await _threaded_async(community.decline_trade_offer, offer_id, profile.id))
 
 
 async def api_trade_cancel(request: web.Request) -> web.Response:
     _telegram_id, profile, error = await _auth_player(request)
     if error is not None:
         return error
+    guard = _guard_response(profile, "trade_cancel")
+    if guard is not None:
+        return guard
     offer_id = _positive_int(request.match_info.get("offer_id"))
     if offer_id is None:
         return web.json_response({"ok": False, "error": "invalid_offer_id"}, status=400)
-    return _action_response(await community.cancel_trade_offer(offer_id, user_id=profile.id))
+    return _action_response(await _threaded_async(community.cancel_trade_offer, offer_id, user_id=profile.id))
 
 
 async def healthz(_request: web.Request) -> web.Response:
@@ -1175,10 +1489,17 @@ async def miniapp_file(request: web.Request) -> web.StreamResponse:
         # team logos and future art folders without permitting path traversal.
         if candidate is None and len(parts) >= 2 and parts[0] == "assets":
             candidate = _safe_file(ROOT / "assets", "/".join(parts[1:]))
+
+    # Telegram/WebView can reopen a previously cached direct Mini App path after
+    # a deploy. For route-like paths (no file extension), serve the SPA shell
+    # instead of a hard 404; app.js then normalizes stale hashes/routes to home.
+    if candidate is None and "." not in Path(tail).name:
+        candidate = _safe_file(MINIAPP_ROOT, "index.html")
+
     if candidate is None:
         raise web.HTTPNotFound()
     response = web.FileResponse(candidate)
-    if candidate.name in {"index.html", "app.js", "style.css"}:
+    if candidate.name in {"index.html", "app.js", "style.css", "media.css", "locale.js"}:
         response.headers["Cache-Control"] = "no-cache"
     else:
         response.headers["Cache-Control"] = "public, max-age=86400"
@@ -1190,7 +1511,7 @@ async def start_miniapp_server() -> web.AppRunner:
     if not index.is_file():
         raise RuntimeError(f"Mini App index is missing: {index}")
 
-    app = web.Application(client_max_size=64 * 1024)
+    app = web.Application(client_max_size=64 * 1024, middlewares=[_mutation_serialization_middleware])
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/api/account", api_account)
     app.router.add_get("/api/bootstrap", api_bootstrap)
@@ -1219,6 +1540,7 @@ async def start_miniapp_server() -> web.AppRunner:
     app.router.add_post("/api/cursed/play", api_cursed_play)
     app.router.add_post("/api/cursed/mirror", api_cursed_mirror)
     app.router.add_post("/api/cursed/exchange", api_cursed_exchange)
+    app.router.add_post("/api/matches/challenge", api_match_challenge)
     app.router.add_post("/api/matches/quick", api_quick_match)
 
     app.router.add_get("/api/history", api_history)

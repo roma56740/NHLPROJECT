@@ -176,7 +176,7 @@ def build_user_home_keyboard() -> InlineKeyboardMarkup:
     markup = _build(USER_HOME_BUTTONS)
     url = get_miniapp_url()
     if url:
-        markup.inline_keyboard.insert(0, [InlineKeyboardButton(text="Открыть Nexcore", web_app=WebAppInfo(url=url))])
+        markup.inline_keyboard.insert(0, [InlineKeyboardButton(text="Открыть NHL Cards", web_app=WebAppInfo(url=url))])
     return markup
 
 
@@ -194,7 +194,7 @@ def build_admin_home_keyboard(user_id: int | None = None) -> InlineKeyboardMarku
     if url:
         markup.inline_keyboard.insert(
             0,
-            [InlineKeyboardButton(text="Открыть Nexcore", web_app=WebAppInfo(url=url))],
+            [InlineKeyboardButton(text="Открыть NHL Cards", web_app=WebAppInfo(url=url))],
         )
     return markup
 
