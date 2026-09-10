@@ -687,9 +687,16 @@
     document.documentElement.lang = language;
     if (language === 'ru') {
       localizeNode(document.body);
-      document.title = translateCore(document.title);
+      // MutationObserver watches characterData/childList. Assigning document.title
+      // on every pass, even to the same string, can create an endless microtask
+      // feedback loop that starves app.js and leaves Telegram on a black screen.
+      const translatedTitle = translateCore(document.title);
+      if (translatedTitle !== document.title) document.title = translatedTitle;
       const meta = document.querySelector('meta[name="description"]');
-      if (meta) meta.content = translateCore(meta.content);
+      if (meta) {
+        const translatedDescription = translateCore(meta.content);
+        if (translatedDescription !== meta.content) meta.content = translatedDescription;
+      }
     }
     ensureLanguageSetting();
   }
