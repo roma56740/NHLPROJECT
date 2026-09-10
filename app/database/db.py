@@ -53,6 +53,10 @@ async def init_database() -> None:
         seed_main_admins(connection)
         seed_default_game_settings(connection)
         seed_default_currencies(connection)
+
+        from app.services.xfactors import seed_xfactors
+        seed_xfactors(connection)
+
         seed_default_collections(connection)
         seed_default_daily_login_rewards(connection)
         seed_default_season_reward_tiers(connection)
@@ -82,7 +86,7 @@ async def init_database() -> None:
 
 
 def run_migrations(connection: sqlite3.Connection) -> None:
-    from app.database.migrations import ensure_migrations_table, run_once
+    from app.database.migrations import ensure_migrations_table, has_run, run_once
     from app.services.audit_log import ensure_audit_log_table
     from app.services.error_log import ensure_error_log_table
     from app.services.creator_tournaments import migrate_creator_tournaments
@@ -92,6 +96,14 @@ def run_migrations(connection: sqlite3.Connection) -> None:
     run_once(connection, "0002_create_application_errors", ensure_error_log_table)
 
     migrate_creator_tournaments(connection)
+
+    # X-FACTOR + MASTERY: inventory-bound factors and per-player lifetime mastery.
+    # Both migrations are additive and safe for the persistent Railway volume.
+    from app.services.xfactors import migrate_xfactor_schema
+    from app.services.mastery import migrate_mastery_schema
+    run_once(connection, "0010_xfactor_inventory_schema", migrate_xfactor_schema)
+    run_once(connection, "0011_player_mastery_schema", migrate_mastery_schema)
+
     ensure_column(
         connection=connection,
         table_name="cards",
@@ -173,6 +185,18 @@ def run_migrations(connection: sqlite3.Connection) -> None:
         column_name="is_exclusive",
         column_sql="is_exclusive INTEGER NOT NULL DEFAULT 0",
     )
+
+    # September Nexcore release requires collections.is_exclusive. Run it only
+    # after the legacy compatibility columns above exist. Refuse to continue if
+    # the old destructive preview migration was somehow applied manually; that
+    # state must be restored from the predeploy backup instead of being hidden.
+    if has_run(connection, "0012_nexcore_release_2026_09"):
+        raise RuntimeError(
+            "Unsafe preview migration 0012_nexcore_release_2026_09 is present. "
+            "Restore the R15 predeploy backup before starting this safe release."
+        )
+    from app.services.release_2026_09 import migrate_release_schema
+    run_once(connection, "0012_nexcore_release_2026_09_safe", migrate_release_schema)
 
     ensure_column(connection=connection, table_name="users", column_name="creator_subscribers", column_sql="creator_subscribers INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection=connection, table_name="users", column_name="creator_chat_link_sent", column_sql="creator_chat_link_sent INTEGER NOT NULL DEFAULT 0")

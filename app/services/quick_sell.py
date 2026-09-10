@@ -46,6 +46,20 @@ def quick_sell_price(overall: int) -> int | None:
     return QUICK_SELL_PRICES.get(overall)
 
 
+def _active_heroes_starter_ids(connection, user_id: int) -> set[int]:
+    table = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='heroes_user_paths'").fetchone()
+    if not table:
+        return set()
+    return {int(row[0]) for row in connection.execute(
+        "SELECT starter_user_card_id FROM heroes_user_paths WHERE user_id=? AND claimed_100=0",
+        (user_id,),
+    ).fetchall()}
+
+
+def _is_active_heroes_starter(connection, user_id: int, user_card_id: int) -> bool:
+    return user_card_id in _active_heroes_starter_ids(connection, user_id)
+
+
 def coins_balance(connection, user_id: int) -> int:
     row = connection.execute(
         "SELECT amount FROM currency_balances WHERE user_id = ? AND currency_code = 'coins'",
@@ -66,9 +80,12 @@ async def get_sell_preview(user_id: int, user_card_id: int) -> tuple[dict | None
             """,
             (user_card_id, user_id),
         ).fetchone()
+        hero_locked = _is_active_heroes_starter(connection, user_id, user_card_id) if row is not None else False
 
     if row is None:
         return None, "Карточка не найдена."
+    if hero_locked:
+        return None, "Эта HEROES 94 участвует в активном пути героя и не может быть продана до эволюции в 100 OVR."
     if int(row["is_in_lineup"]):
         return None, "Эта карта стоит в активном составе. Сначала замени её."
     if int(row["trade_locked"]):
@@ -104,6 +121,9 @@ async def quick_sell_single(user_id: int, user_card_id: int) -> QuickSellResult:
         if row is None:
             connection.rollback()
             return QuickSellResult(False, "Карта не найдена", "Возможно, она уже продана.")
+        if _is_active_heroes_starter(connection, user_id, user_card_id):
+            connection.rollback()
+            return QuickSellResult(False, "Нельзя продать", "Эта HEROES 94 участвует в активном пути героя до эволюции в 100 OVR.")
         if int(row["is_in_lineup"]):
             connection.rollback()
             return QuickSellResult(False, "Нельзя продать", "Карта стоит в активном составе.")
@@ -158,6 +178,7 @@ async def quick_sell_bulk(user_id: int, mode: str) -> BulkSellResult:
     with get_connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         rows = eligible_rows_for_bulk(connection, user_id)
+        heroes_protected = _active_heroes_starter_ids(connection, user_id)
 
         to_sell: list[tuple[int, int]] = []  # (user_card_id, price)
         skipped = 0
@@ -166,7 +187,7 @@ async def quick_sell_bulk(user_id: int, mode: str) -> BulkSellResult:
             for row in rows:
                 if row["rarity"] != "Common":
                     continue
-                if int(row["is_in_lineup"]) or int(row["trade_locked"]):
+                if int(row["id"]) in heroes_protected or int(row["is_in_lineup"]) or int(row["trade_locked"]):
                     skipped += 1
                     continue
                 price = quick_sell_price(int(row["overall"]))
@@ -184,8 +205,8 @@ async def quick_sell_bulk(user_id: int, mode: str) -> BulkSellResult:
                 if len(copies) <= 1:
                     continue
                 # копии, которые нельзя продавать (в составе/заблокированы) — остаются
-                protected = [r for r in copies if int(r["is_in_lineup"]) or int(r["trade_locked"])]
-                sellable = [r for r in copies if not (int(r["is_in_lineup"]) or int(r["trade_locked"]))]
+                protected = [r for r in copies if int(r["id"]) in heroes_protected or int(r["is_in_lineup"]) or int(r["trade_locked"])]
+                sellable = [r for r in copies if not (int(r["id"]) in heroes_protected or int(r["is_in_lineup"]) or int(r["trade_locked"]))]
 
                 # если нет защищённых, обязаны оставить одну продаваемую копию
                 keep_one = len(protected) == 0

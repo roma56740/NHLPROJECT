@@ -10,7 +10,7 @@ SETTING_KEYS = [
     ("matchmaking_min_wait_seconds", "⏱ Минимум поиска"),
     ("matchmaking_max_wait_seconds", "⏱ Максимум поиска"),
     ("start_coins", "🪙 Стартовые Coins"),
-    ("start_energy", "💵 Стартовые Рубли"),
+    ("start_energy", "⚡ Стартовая Energy"),
     ("start_rank_points", "🏅 Стартовые Rank-point"),
     ("free_card_cooldown_hours", "🎁 Кулдаун бесплатной карты"),
     ("creator_weekly_rewards_enabled", "⭐ Недельные креаторы"),
@@ -22,7 +22,6 @@ SETTING_KEYS = [
     ("subscription_channel_url", "🔗 Ссылка на канал"),
     ("start_banner_path", "🖼 Стартовая картинка"),
     ("pack_animation_step_delay_ms", "✨ Скорость анимации"),
-    ("ranked_shootout_chance_percent", "🎯 Шанс буллитов Ranked"),
 ]
 
 

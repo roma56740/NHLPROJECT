@@ -25,6 +25,8 @@ from app.services.quick_sell import (
     toggle_card_lock,
 )
 from app.services.renders import render_card_profile_image, render_collection_image
+from app.services.mastery import get_mastery_player
+from app.services.xfactors import get_installed_xfactors
 from app.services.user_cards import (
     get_player_card_profile,
     get_player_cards_page,
@@ -191,12 +193,19 @@ async def show_card_profile(callback: CallbackQuery, user_card_id: int, page: in
         await callback.answer()
         return
 
+    installed_xfactors = get_installed_xfactors(card.id)
     text = build_player_card_profile_text(card)
+    if installed_xfactors:
+        text += "\n\n<b>⚡ X-Factors</b>\n" + "\n".join(
+            f"• {escape(item.xfactor.name)}" for item in installed_xfactors
+        )
     keyboard = build_user_card_profile_keyboard(
         user_card_id=card.id,
         page=page,
         is_locked=card.trade_locked,
         in_lineup=card.is_in_lineup,
+        has_mastery=get_mastery_player(card.player_key) is not None,
+        xfactor_count=len(installed_xfactors),
     )
     try:
         image_path = render_card_profile_image(card, user_id=callback.from_user.id)

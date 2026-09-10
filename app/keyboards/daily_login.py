@@ -43,11 +43,8 @@ def build_admin_daily_main_keyboard(ladder: list[DailyRewardDef]) -> InlineKeybo
 def build_admin_day_keyboard(day: int, has_pack: bool) -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(text="🪙 Изменить Coins", callback_data=f"admin_daily:edit_coins:{day}")],
-        [InlineKeyboardButton(text="💵 Изменить Рубли", callback_data=f"admin_daily:edit_rubles:{day}")],
-        [InlineKeyboardButton(text="🎁 Выбрать пак", callback_data=f"admin_daily:pack:{day}")],
+        [InlineKeyboardButton(text="⚡ Изменить Energy", callback_data=f"admin_daily:edit_rubles:{day}")],
     ]
-    if has_pack:
-        keyboard.append([InlineKeyboardButton(text="🚫 Убрать пак", callback_data=f"admin_daily:clear_pack:{day}")])
     keyboard.append([InlineKeyboardButton(text="⬅️ К дням", callback_data="admin_daily:main")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 

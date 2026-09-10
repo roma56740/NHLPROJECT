@@ -37,12 +37,12 @@ ADMIN_ROLES: dict[str, AdminRoleInfo] = {
     ADMIN_ROLE_CONTENT: AdminRoleInfo(
         ADMIN_ROLE_CONTENT,
         "🃏 Контент-админ",
-        "Карты, массовая загрузка, паки, стартовый набор, дивизионы, картинки, химия и зарплаты.",
+        "Карты, массовая загрузка, боксы, стартовый набор, дивизионы, картинки, химия и зарплаты.",
     ),
     ADMIN_ROLE_ECONOMY: AdminRoleInfo(
         ADMIN_ROLE_ECONOMY,
         "💰 Экономика",
-        "Награды, магазин, паки, промокоды, квесты, события, Hockey Pass и ежедневный вход.",
+        "Награды, магазин, боксы, промокоды, квесты, события, Season Pass и ежедневный вход.",
     ),
     ADMIN_ROLE_MODERATOR: AdminRoleInfo(
         ADMIN_ROLE_MODERATOR,

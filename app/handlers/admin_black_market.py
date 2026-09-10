@@ -38,10 +38,8 @@ ADMIN_BLACK_MARKET_BUTTON_TEXT = "🕶 Чёрный рынок"
 # Соответствие пользовательских типов из мастера "Добавить предмет" -> (item_type, cosmetic_type).
 _ADD_ITEM_TYPE_MAP: dict[str, tuple[str, str | None]] = {
     "card": ("card", None),
-    "frame": ("cosmetic", "CARD_FRAME"),
     "background": ("cosmetic", "PROFILE_BACKGROUND"),
     "prefix": ("cosmetic", "NICK_BADGE"),
-    "pack": ("pack", None),
     "currency": ("currency", None),
 }
 

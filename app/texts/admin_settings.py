@@ -43,7 +43,7 @@ SETTING_LABELS = {
     "matchmaking_min_wait_seconds": "⏱ Минимум поиска",
     "matchmaking_max_wait_seconds": "⏱ Максимум поиска",
     "start_coins": "🪙 Стартовые Coins",
-    "start_energy": "💵 Стартовые Рубли",
+    "start_energy": "⚡ Стартовая Energy",
     "start_rank_points": "🏅 Стартовые Rank-point",
     "free_card_cooldown_hours": "🎁 Кулдаун бесплатной карты",
     "creator_weekly_rewards_enabled": "⭐ Недельные креаторы",

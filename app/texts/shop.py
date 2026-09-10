@@ -7,7 +7,7 @@ from app.services.shop import ShopHistoryPage, ShopPackItem, ShopPacksPage, Shop
 SHOP_MAIN_TEXT = """
 <b>🛒 Магазин</b>
 
-Здесь можно купить паки за игровые валюты и сразу добавить их в коллекцию.
+Здесь можно купить боксы за игровые валюты и сразу добавить их в коллекцию.
 
 Выбери раздел ниже.
 """.strip()
@@ -44,7 +44,7 @@ def build_shop_packs_page_text(page: ShopPacksPage) -> str:
 
 Витрина пока пустая.
 
-Скоро здесь появятся паки, события и специальные предложения.
+Скоро здесь появятся боксы, события и специальные предложения.
 """.strip()
 
     return f"""
@@ -61,7 +61,7 @@ def build_shop_pack_profile_text(pack: ShopPackItem) -> str:
     selected_note = "✅ Награды готовы" if pack.selected_cards_count > 0 else "⏳ Награды скоро появятся"
 
     return f"""
-<b>🎁 {safe(pack.name)}</b>
+<b>📦 {safe(pack.name)}</b>
 
 {safe(pack.description)}
 
@@ -78,10 +78,10 @@ def build_shop_confirm_text(pack: ShopPackItem) -> str:
     return f"""
 <b>🛒 Подтверждение покупки</b>
 
-🎁 Пак: <b>{safe(pack.name)}</b>
+📦 Пак: <b>{safe(pack.name)}</b>
 💰 Цена: <b>{build_shop_price_text(pack)}</b>
 
-После покупки пак появится в разделе 🎁 Паки.
+После покупки бокс появится в разделе 📦 Боксы.
 """.strip()
 
 
@@ -96,10 +96,10 @@ def build_shop_purchase_success_text(result: ShopPurchaseResult) -> str:
     return f"""
 <b>✅ Покупка готова</b>
 
-🎁 Пак: <b>{safe(result.pack_name)}</b>
+📦 Пак: <b>{safe(result.pack_name)}</b>
 💰 Цена: <b>{build_shop_price_text(result)}</b>{balance_line}
 
-Пак уже добавлен в раздел 🎁 Паки.
+Бокс уже добавлен в раздел 📦 Боксы.
 """.strip()
 
 
@@ -129,7 +129,7 @@ def build_shop_history_text(page: ShopHistoryPage) -> str:
             name = item.currency_name or item.currency_code
             price = f"{item.amount:,} {icon} {safe(name)}".replace(",", " ")
 
-        lines.append(f"🎁 <b>{safe(item.pack_name)}</b>\n💰 {price}\n🕒 {safe(item.created_at)}")
+        lines.append(f"📦 <b>{safe(item.pack_name)}</b>\n💰 {price}\n🕒 {safe(item.created_at)}")
 
     return f"""
 <b>📜 История покупок</b>
@@ -141,7 +141,7 @@ def build_shop_history_text(page: ShopHistoryPage) -> str:
 """.strip()
 
 
-RUBLES_PURCHASE_TEXT = "💵 <b>Рубли</b>\n\nЗа покупкой рублей можно отписать — @E4RFQ"
+RUBLES_PURCHASE_TEXT = "⚡ <b>Energy</b>\n\nПокупка Energy доступна в новом Energy Store."
 
 
 def build_shop_balance_line(profile) -> str:
@@ -155,5 +155,5 @@ def build_shop_main_text(profile) -> str:
     return (
         "<b>🛒 Магазин</b>\n\n"
         + build_shop_balance_line(profile)
-        + "Здесь можно купить паки за игровые валюты и сразу добавить их в коллекцию.\n\nВыбери раздел ниже."
+        + "Здесь можно купить боксы за игровые валюты и сразу добавить их в коллекцию.\n\nВыбери раздел ниже."
     )

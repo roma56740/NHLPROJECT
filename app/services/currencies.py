@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from app.database.db import get_connection
 from app.database.schema import DEFAULT_CURRENCIES
 from app.services.settings import get_int_setting
+from app.services.miniapp_runtime import miniapp_only_mode_enabled
 from config import settings
 
 
@@ -16,7 +17,7 @@ class CurrencyBalance:
 
 START_BALANCES = {
     "coins": settings.start_coins,
-    "energy": settings.start_energy,
+    "energy": 0 if miniapp_only_mode_enabled() else settings.start_energy,
     "rank_point": settings.start_rank_points,
 }
 
@@ -29,7 +30,7 @@ async def ensure_user_balances(user_id: int, is_new_player: bool) -> None:
     with get_connection() as connection:
         start_balances = {
             "coins": await get_int_setting("start_coins", settings.start_coins, minimum=0),
-            "energy": await get_int_setting("start_energy", settings.start_energy, minimum=0),
+            "energy": 0 if miniapp_only_mode_enabled() else await get_int_setting("start_energy", settings.start_energy, minimum=0),
             "rank_point": await get_int_setting("start_rank_points", settings.start_rank_points, minimum=0),
         }
 

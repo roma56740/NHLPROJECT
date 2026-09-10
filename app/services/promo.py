@@ -3,6 +3,7 @@ from datetime import datetime
 
 from app.database.db import get_connection
 from app.services.rewards import grant_currency, grant_pack
+from app.services.miniapp_runtime import miniapp_only_mode_enabled
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,8 @@ def grant_bp_points(connection, user_id: int, amount: int) -> None:
         "UPDATE users SET bp_points = bp_points + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         (amount, user_id),
     )
+    from app.services.release_2026_09 import grant_fireside_pass_points
+    grant_fireside_pass_points(connection, user_id, amount)
 
 
 async def redeem_promo(user_id: int, code_text: str) -> tuple[PromoReward | None, str]:
@@ -101,7 +104,8 @@ async def redeem_promo(user_id: int, code_text: str) -> tuple[PromoReward | None
         pack_id = promo["pack_id"]
 
         grant_currency(connection, user_id, "coins", coins)
-        grant_currency(connection, user_id, "energy", rubles)  # energy = Рубли
+        if not miniapp_only_mode_enabled():
+            grant_currency(connection, user_id, "energy", rubles)  # legacy reward; frozen in MiniApp-only mode
         grant_bp_points(connection, user_id, bp)
         pack_name = None
         if pack_id is not None and grant_pack(connection, user_id, int(pack_id), 1):

@@ -1,0 +1,76 @@
+NEXCORE R16 SAFE DEPLOY - BUILD VALIDATION
+Date: 2026-09-10
+Target repository: roma56740/NHLPROJECT
+Expected production baseline: 9ba868c48d646983de79acc71e361f4dfa38f44e (R15)
+
+DATABASE / MIGRATION
+- SCHEMA_VERSION: 4
+- Release migration: 0012_nexcore_release_2026_09_safe
+- Release migration uses a SAVEPOINT and statement-by-statement execution.
+- The old destructive preview migration name is explicitly refused if detected.
+- No reset of users.bp_points, hockey_pass_level, premium_pass, DNA balances,
+  Ranked seasons, legacy Packs, Stronghold data, card-frame bindings, or Fortress Tokens.
+- Simulated R15-schema migration test: PASS
+  quick_check: ok
+  nickname: PRESERVE_ME
+  bp_points: 321 -> 321
+  hockey_pass_level: 28 -> 28
+  legacy premium_pass: 1 -> 1
+  wins/losses/rating: 17/6/1234 preserved
+  Coins/Energy/Rank Coin: 777777/123/9 preserved
+  DNA collectible quantity: 7 preserved
+  legacy test user-card copy: preserved
+  new X-Factor/Mastery/Boxes/Fireside/HEROES/Cursed tables: present
+- Migration idempotent re-run test: PASS
+- Injected migration failure test: PASS
+  migration rolled back to savepoint, new release tables did not remain,
+  legacy user data remained unchanged, quick_check: ok
+
+BACKUP / ROLLBACK
+- R15 -> R16 SCHEMA_VERSION change triggers predeploy backup: PASS in isolated smoke test
+- predeploy backup quick_check: PASS
+- restore_latest_predeploy.py dry-run: PASS
+- confirmed restore smoke: PASS
+- emergency pre-restore copy created: PASS
+- restored DB quick_check: ok
+
+MONETIZATION
+- User Energy purchase does not auto-credit Energy.
+- Store directs Energy purchase to @teyld.
+- Admin Wallets can manually add/remove Energy.
+- Manual admin Energy credit smoke: 123 + 400 = 523: PASS
+- Backend Premium Fireside Pass purchase smoke: 523 - 400 = 123 and premium=1: PASS
+- Dead Man's Chest intentional Premium Pass drop chance 0.3%: preserved.
+- Mini App default paid Energy is 0, not demo 1000.
+- Mini App reads real Energy/Premium state through Telegram-signed initData API.
+- Mini App Premium activation is server-authoritative.
+
+MINI APP
+- Static server /healthz: HTTP 200
+- /miniapp/: HTTP 200
+- aliased HEROES asset: HTTP 200
+- signed initData validation: PASS
+- tampered initData rejection: PASS
+- /api/account authenticated smoke: PASS
+- node --check dist/app.js: PASS
+
+LEGACY BOT PRESERVATION
+- Baseline Python files removed: 0
+- Baseline Python files with removed top-level functions/classes: 0
+- Ranked, Stronghold, DNA, Packs, Hockey Pass routers remain registered.
+- stronghold_lifecycle_loop and pack reveal recovery remain in main.py.
+- MiniAppOnlyMiddleware freezes player Telegram UI without deleting legacy code.
+- Admins bypass MiniApp-only freeze and retain full admin/legacy interface.
+
+PERSISTENCE
+- Railway Volume path remains /app/data.
+- render cache remains /app/cache/render_cache (ephemeral).
+- assets/uploads is NOT shipped as a normal deploy directory.
+- restore_seed/uploads: 213 files, 304872643 bytes.
+- RESTORE_SEED_SHA256.txt: 213/213 files verified.
+
+SOURCE CHECKS
+- Python compileall before cleanup: PASS
+- Python AST final verification: PASS (333 Python files)
+- Runtime/secret artifacts removed before packaging: __pycache__, *.pyc, SQLite DB files, .env.
+- Full pytest suite was NOT run because aiogram is not installed in this packaging environment.

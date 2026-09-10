@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from app.services.admin_permissions import get_permission_for_callback, has_admin_permission
+from app.services.miniapp_runtime import get_miniapp_url
 from app.utils.inline_navigation import suppress_auto_back_button
 
 
@@ -35,15 +36,16 @@ USER_MORE_BUTTONS: tuple[tuple[tuple[str, str], ...], ...] = (
 )
 
 
-# Ровно 12 быстрых административных действий. Полная структура остаётся доступна
+# Быстрые административные действия. Полная структура остаётся доступна
 # через «Все разделы» и не загромождает первый экран.
 ADMIN_HOME_BUTTONS: tuple[tuple[tuple[str, str], ...], ...] = (
     (("🃏 Карточки", "menu:open:admin_cards"), ("🎁 Паки", "menu:open:admin_packs")),
-    (("👥 Пользователи", "menu:open:admin_users"), ("💱 Валюты", "menu:open:admin_wallets")),
-    (("🏆 Ranked", "menu:open:admin_ranked"), ("🏰 Stronghold", "menu:open:admin_stronghold")),
-    (("⚔️ Clan War", "menu:open:admin_war2"), ("🕶 Чёрный рынок", "menu:open:admin_black_market")),
-    (("🎨 Косметика", "menu:open:admin_cosmetics"), ("🛠 Техперерыв", "menu:open:admin_maintenance")),
-    (("📥 Массовая загрузка", "menu:open:admin_bulk"), ("☰ Все разделы", "menu:admin:all")),
+    (("👥 Пользователи", "menu:open:admin_users"), ("⚡ Донат / Energy", "menu:open:admin_wallets")),
+    (("📦 Boxes", "release:boxes_admin"), ("🏆 Ranked", "menu:open:admin_ranked")),
+    (("🏰 Stronghold", "menu:open:admin_stronghold"), ("⚔️ Clan War", "menu:open:admin_war2")),
+    (("🕶 Чёрный рынок", "menu:open:admin_black_market"), ("🎨 Косметика", "menu:open:admin_cosmetics")),
+    (("🛠 Техперерыв", "menu:open:admin_maintenance"), ("📥 Массовая загрузка", "menu:open:admin_bulk")),
+    (("☰ Все разделы", "menu:admin:all"),),
 )
 
 ADMIN_ALL_BUTTONS: tuple[tuple[tuple[str, str], ...], ...] = (
@@ -80,7 +82,8 @@ ADMIN_PLAYERS_BUTTONS: tuple[tuple[tuple[str, str], ...], ...] = (
 )
 
 ADMIN_ECONOMY_BUTTONS: tuple[tuple[tuple[str, str], ...], ...] = (
-    (("💱 Валюты", "menu:open:admin_wallets"), ("💵 Зарплаты", "menu:open:admin_salaries")),
+    (("⚡ Выдать Energy / донат", "menu:open:admin_wallets"), ("💵 Зарплаты", "menu:open:admin_salaries")),
+    (("📦 Boxes", "release:boxes_admin"),),
     (("🎁 Награды", "menu:open:admin_rewards"), ("🎯 Задания", "menu:open:admin_quests")),
     (("🎟 Hockey Pass", "menu:open:admin_hockey_pass"), ("📅 Ежедневный вход", "menu:open:admin_daily")),
     (("🎫 Промокоды", "menu:open:admin_promo"), ("🎁 Бесплатная карта", "menu:open:admin_free_card")),
@@ -170,7 +173,11 @@ ADMIN_TARGET_CALLBACKS: dict[str, str] = {
 
 
 def build_user_home_keyboard() -> InlineKeyboardMarkup:
-    return _build(USER_HOME_BUTTONS)
+    markup = _build(USER_HOME_BUTTONS)
+    url = get_miniapp_url()
+    if url:
+        markup.inline_keyboard.insert(0, [InlineKeyboardButton(text="Открыть Nexcore", web_app=WebAppInfo(url=url))])
+    return markup
 
 
 def build_user_progress_keyboard() -> InlineKeyboardMarkup:

@@ -1,10 +1,11 @@
 from aiogram import Router
 
-from app.handlers import navigation, cosmetics, admin_bulk_upload, admin_black_market, admin_cards, admin_divisions, admin_salaries, admin_chemistry, admin_maintenance, admin_panel, admin_ranked, admin_rating, admin_render, admin_rewards, admin_stronghold, admin_war2, admin_security, admin_settings, admin_users, admin_wallets, black_market, broadcast, community, bulk_cards, creators, creator_tournaments, daily_login, diagnostics, promo, ranked, seasons, events, dna_event, free_card, hockey_pass, lineup, matches, menu, packs, profile, quests, rating, shop, start, stronghold, subscription, starter_kit, user_cards, war2, admin_arenas, clan_seasons, clan_wars
+from app.handlers import navigation, inventory, mastery, release_2026_09, cosmetics, admin_bulk_upload, admin_black_market, admin_cards, admin_divisions, admin_salaries, admin_chemistry, admin_maintenance, admin_panel, admin_ranked, admin_rating, admin_render, admin_rewards, admin_stronghold, admin_war2, admin_security, admin_settings, admin_users, admin_wallets, black_market, broadcast, community, bulk_cards, creators, creator_tournaments, daily_login, diagnostics, promo, ranked, seasons, events, dna_event, free_card, hockey_pass, lineup, matches, menu, packs, profile, quests, rating, shop, start, stronghold, subscription, starter_kit, user_cards, war2, admin_arenas, clan_seasons, clan_wars
 from app.middlewares.banned import BannedPlayerMiddleware
 from app.middlewares.admin_permissions import AdminPermissionMiddleware
 from app.middlewares.last_active import LastActiveMiddleware
 from app.middlewares.maintenance import MaintenanceModeMiddleware
+from app.middlewares.miniapp_freeze import MiniAppOnlyMiddleware
 
 
 def setup_routers() -> Router:
@@ -13,6 +14,7 @@ def setup_routers() -> Router:
     banned_player_middleware = BannedPlayerMiddleware()
     admin_permission_middleware = AdminPermissionMiddleware()
     last_active_middleware = LastActiveMiddleware()
+    miniapp_only_middleware = MiniAppOnlyMiddleware()
 
     # ГЛОБАЛЬНЫЙ ТЕХНИЧЕСКИЙ ПЕРЕРЫВ регистрируется ПЕРВЫМ — раньше банов,
     # прав администратора и last-active — чтобы обычные пользователи блокировались
@@ -28,9 +30,16 @@ def setup_routers() -> Router:
     router.message.middleware(last_active_middleware)
     router.callback_query.middleware(last_active_middleware)
 
+    # Freeze old player-facing Telegram UI without deleting any handler. Admins
+    # bypass this middleware and keep the complete legacy/admin interface.
+    router.message.middleware(miniapp_only_middleware)
+    router.callback_query.middleware(miniapp_only_middleware)
+
     router.include_router(start.router)
     router.include_router(subscription.router)
     router.include_router(navigation.router)
+    router.include_router(inventory.router)
+    router.include_router(mastery.router)
     router.include_router(cosmetics.router)
     router.include_router(admin_panel.router)
     router.include_router(admin_bulk_upload.router)
@@ -75,6 +84,7 @@ def setup_routers() -> Router:
     router.include_router(black_market.router)
     router.include_router(war2.router)
     router.include_router(admin_war2.router)
+    router.include_router(release_2026_09.router)
     router.include_router(ranked.router)
     router.include_router(admin_ranked.router)
     router.include_router(diagnostics.router)

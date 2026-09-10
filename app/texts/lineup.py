@@ -107,7 +107,7 @@ def build_slot_cards_text(page: LineupCardsPage) -> str:
 <b>{slot.icon} {safe(slot.title)}</b>
 
 Подходящих карточек пока нет.
-Открой паки или получи нужные карты, затем вернись к составу.
+Открой боксы или получи нужные карты, затем вернись к составу.
 """.strip()
 
     return f"""

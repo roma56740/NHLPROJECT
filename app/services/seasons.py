@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from app.database.db import get_connection
 from app.services.rewards import grant_currency, grant_pack
+from app.services.miniapp_runtime import miniapp_only_mode_enabled
 
 # Ранг -> ключ тира награды.
 def tier_for_rank(rank: int) -> str | None:
@@ -159,7 +160,8 @@ async def reset_season() -> SeasonResetResult:
                 continue
 
             grant_currency(connection, int(player["id"]), "coins", tier.coins)
-            grant_currency(connection, int(player["id"]), "energy", tier.rubles)
+            if not miniapp_only_mode_enabled():
+                grant_currency(connection, int(player["id"]), "energy", tier.rubles)
             if tier.pack_id is not None:
                 grant_pack(connection, int(player["id"]), int(tier.pack_id), 1)
             rewarded += 1

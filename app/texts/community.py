@@ -130,7 +130,11 @@ def format_number(value: int) -> str:
 
 
 def format_card_line(card) -> str:
-    return f"🏒 <b>{card.name}</b> • {card.position} • {card.overall} OVR • {card.rarity}"
+    line = f"🏒 <b>{card.name}</b> • {card.position} • {card.overall} OVR • {card.rarity}"
+    xfactor_names = tuple(getattr(card, "xfactor_names", ()) or ())
+    if xfactor_names:
+        line += "\n   ⚡ " + " · ".join(escape(name, quote=False) for name in xfactor_names)
+    return line
 
 
 def build_players_page_text(page: CommunityPlayersPage) -> str:

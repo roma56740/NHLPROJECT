@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 CURRENCY_VALUE_IN_COINS = {
     "coins": 1,
-    "energy": 10_000,      # в интерфейсе проекта эта валюта уже переименована в рубли
+    "energy": 10_000,      # в интерфейсе проекта эта валюта называется Energy
     "rubles": 10_000,
     "ruble": 10_000,
     "rank_point": 40_000,

@@ -19,6 +19,7 @@ from app.services.free_card import free_card_notification_loop
 from app.services.health_monitor import health_check_loop
 from app.services import match_guard, war2_core
 from app.services.missing_assets import missing_assets_notification_loop
+from app.services.miniapp_server import start_miniapp_server
 from app.services.pack_reveal_recovery import resume_pending_pack_reveals
 from app.services.stronghold_lifecycle import stronghold_lifecycle_loop
 from config import settings
@@ -91,6 +92,7 @@ async def main() -> None:
 
     await init_database()
     await asyncio.to_thread(cleanup_render_cache)
+    miniapp_runner = await start_miniapp_server()
 
     # ЕДИНЫЙ ГЛОБАЛЬНЫЙ MATCH LOCK: boot recovery ДО старта polling — если процесс
     # упал во время матча, пользователь не должен оставаться заблокированным
@@ -152,6 +154,7 @@ async def main() -> None:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        await miniapp_runner.cleanup()
 
 
 if __name__ == "__main__":

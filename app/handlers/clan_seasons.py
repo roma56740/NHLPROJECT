@@ -44,8 +44,7 @@ def tiers_kb(tiers) -> InlineKeyboardMarkup:
 def tier_edit_kb(place: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🪙 Coins", callback_data=f"clan_season:edit:{place}:coins")],
-        [InlineKeyboardButton(text="💵 Рубли", callback_data=f"clan_season:edit:{place}:rubles")],
-        [InlineKeyboardButton(text="🎁 ID пака", callback_data=f"clan_season:edit:{place}:pack_id")],
+        [InlineKeyboardButton(text="⚡ Energy", callback_data=f"clan_season:edit:{place}:rubles")],
         [InlineKeyboardButton(text="⬅️ К топ-5", callback_data="clan_season:tiers")],
     ])
 
@@ -99,8 +98,8 @@ async def clan_season_tiers(callback: CallbackQuery, state: FSMContext) -> None:
     tiers = await get_clan_reward_tiers()
     lines = ["<b>🎁 Награды топ-5 кланов</b>", "", "Каждое место редактируется отдельно. Награда выдаётся каждому участнику клана.", ""]
     for t in tiers:
-        pack = f" + 🎁 пак ID {t.pack_id}" if t.pack_id else ""
-        rubles = f" + 💵 {fmt(t.rubles)}" if t.rubles else ""
+        pack = ""
+        rubles = f" + ⚡ {fmt(t.rubles)}" if t.rubles else ""
         lines.append(f"{t.place} место: 🪙 {fmt(t.coins)}{rubles}{pack}")
     await edit_or_send(callback, "\n".join(lines), reply_markup=tiers_kb(tiers))
     await callback.answer()
@@ -118,7 +117,7 @@ async def clan_season_tier(callback: CallbackQuery, state: FSMContext) -> None:
         await clan_season_tiers(callback, state)
         return
     pack = f"{t.pack_id} — {t.pack_name}" if t.pack_id else "нет"
-    text = f"<b>🎁 {place} место среди кланов</b>\n\n🪙 Coins: <b>{fmt(t.coins)}</b>\n💵 Рубли: <b>{fmt(t.rubles)}</b>\n🎁 Пак: <b>{pack}</b>\n\nЧто изменить?"
+    text = f"<b>🎁 {place} место среди кланов</b>\n\n🪙 Coins: <b>{fmt(t.coins)}</b>\n⚡ Energy: <b>{fmt(t.rubles)}</b>\n\nЧто изменить?"
     await edit_or_send(callback, text, reply_markup=tier_edit_kb(place))
     await callback.answer()
 
@@ -131,7 +130,7 @@ async def clan_season_edit(callback: CallbackQuery, state: FSMContext) -> None:
     place = int(raw_place)
     await state.set_state(ClanSeasonStates.waiting_for_value)
     await state.update_data(place=place, field=field)
-    label = {"coins": "количество coins", "rubles": "количество рублей", "pack_id": "ID пака, 0 — убрать пак"}.get(field, field)
+    label = {"coins": "количество coins", "rubles": "количество Energy", "pack_id": "ID пака, 0 — убрать пак"}.get(field, field)
     await edit_or_send(callback, f"Введи {label} для {place} места.", reply_markup=tier_edit_kb(place))
     await callback.answer()
 
@@ -183,8 +182,8 @@ async def clan_season_reset_confirm(callback: CallbackQuery, state: FSMContext) 
         "<b>Текущие награды:</b>",
     ]
     for t in tiers:
-        pack = f" + пак ID {t.pack_id}" if t.pack_id else ""
-        lines.append(f"{t.place} место: 🪙 {fmt(t.coins)} · 💵 {fmt(t.rubles)}{pack}")
+        pack = ""
+        lines.append(f"{t.place} место: 🪙 {fmt(t.coins)} · ⚡ {fmt(t.rubles)}{pack}")
     lines.extend([
         "",
         "После подтверждения рейтинг, победы, активные атаки и вклад игроков будут сброшены.",

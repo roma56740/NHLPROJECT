@@ -11,13 +11,10 @@ def build_admin_panel_main_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📦 База", callback_data="admin_panel:data"),
             ],
             [
-                InlineKeyboardButton(text="🏆 Ranked", callback_data="admin_ranked:main"),
                 InlineKeyboardButton(text="⚔️ Clan War", callback_data="admin_war2:main"),
             ],
-            [InlineKeyboardButton(text="🏰 Stronghold", callback_data="admin_stronghold:main")],
             [
-                InlineKeyboardButton(text="🎬 Видео паков", callback_data="admin_packs:videos:1"),
-                InlineKeyboardButton(text="🕐 Башни", callback_data="admin_stronghold:schedule"),
+                InlineKeyboardButton(text="📦 Боксы", callback_data="release:boxes_admin"),
             ],
             [
                 InlineKeyboardButton(text="🛠 Техперерыв", callback_data="admin_maintenance:main"),

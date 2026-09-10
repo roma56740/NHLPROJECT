@@ -79,6 +79,7 @@ class TradeUserCardItem:
     team: str
     collection_name: str
     rarity: str
+    xfactor_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -566,7 +567,16 @@ async def get_available_user_cards_page(
         rows = connection.execute(
             f"""
             SELECT user_cards.id, cards.id AS card_id, cards.name, cards.position, cards.overall,
-                   cards.team, collections.name AS collection_name, cards.rarity
+                   cards.team, collections.name AS collection_name, cards.rarity,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(name, char(31)) FROM (
+                           SELECT x.name AS name
+                           FROM user_card_xfactors ucx
+                           JOIN xfactors x ON x.id = ucx.xfactor_id
+                           WHERE ucx.user_card_id = user_cards.id
+                           ORDER BY ucx.slot_no
+                       )
+                   ), '') AS xfactor_names
             FROM user_cards
             JOIN cards ON cards.id = user_cards.card_id
             JOIN collections ON collections.id = cards.collection_id
@@ -598,6 +608,7 @@ def trade_user_card_from_row(row) -> TradeUserCardItem:
         team=row["team"],
         collection_name=row["collection_name"],
         rarity=row["rarity"],
+        xfactor_names=tuple(filter(None, str(row["xfactor_names"] or "").split("\x1f"))) if "xfactor_names" in row.keys() else (),
     )
 
 
@@ -613,7 +624,16 @@ async def get_selected_user_cards(user_id: int, selected_ids: list[int]) -> list
         rows = connection.execute(
             f"""
             SELECT user_cards.id, cards.id AS card_id, cards.name, cards.position, cards.overall,
-                   cards.team, collections.name AS collection_name, cards.rarity
+                   cards.team, collections.name AS collection_name, cards.rarity,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(name, char(31)) FROM (
+                           SELECT x.name AS name
+                           FROM user_card_xfactors ucx
+                           JOIN xfactors x ON x.id = ucx.xfactor_id
+                           WHERE ucx.user_card_id = user_cards.id
+                           ORDER BY ucx.slot_no
+                       )
+                   ), '') AS xfactor_names
             FROM user_cards
             JOIN cards ON cards.id = user_cards.card_id
             JOIN collections ON collections.id = cards.collection_id
@@ -1182,7 +1202,16 @@ async def get_trade_offer_profile(offer_id: int) -> TradeOfferProfile | None:
         offered_rows = connection.execute(
             """
             SELECT user_cards.id, cards.id AS card_id, cards.name, cards.position, cards.overall,
-                   cards.team, collections.name AS collection_name, cards.rarity
+                   cards.team, collections.name AS collection_name, cards.rarity,
+                   COALESCE((
+                       SELECT GROUP_CONCAT(name, char(31)) FROM (
+                           SELECT x.name AS name
+                           FROM user_card_xfactors ucx
+                           JOIN xfactors x ON x.id = ucx.xfactor_id
+                           WHERE ucx.user_card_id = user_cards.id
+                           ORDER BY ucx.slot_no
+                       )
+                   ), '') AS xfactor_names
             FROM trade_offer_cards
             JOIN user_cards ON user_cards.id = trade_offer_cards.user_card_id
             JOIN cards ON cards.id = user_cards.card_id

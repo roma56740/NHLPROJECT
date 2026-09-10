@@ -16,6 +16,8 @@ from app.services.quests import apply_match_quest_progress
 from app.services.settings import get_int_setting
 from app.services.salary import format_salary
 from app.services.users import PlayerProfile, get_player_profile_by_telegram_id
+from app.services.xfactor_battle import BattleModifiers, active_factor_names, get_lineup_battle_modifiers
+from app.services.xfactors import get_installed_xfactor_codes
 
 
 WIN_COINS_REWARD = 100
@@ -42,6 +44,7 @@ EVENT_ICONS = {
     "POWERPLAY": "⚡",
     "BIG HIT": "💥",
     "BREAKAWAY": "🏒",
+    "XFACTOR": "⚡",
 }
 
 
@@ -278,15 +281,19 @@ def simulate_period(
     opponent_ovr: int,
     lineup_cards: list[LineupCard],
     opponent_name: str,
+    user_modifiers: BattleModifiers | None = None,
+    opponent_modifiers: BattleModifiers | None = None,
 ) -> tuple[MatchPeriodSummary, list[MatchEventInfo]]:
-    user_shots = random.randint(7, 14) + max(0, user_ovr - opponent_ovr) // 8
-    opponent_shots = random.randint(7, 14) + max(0, opponent_ovr - user_ovr) // 8
-    user_goal_chance = clamp(7 + (user_ovr - opponent_ovr), 4, 13)
-    opponent_goal_chance = clamp(7 + (opponent_ovr - user_ovr), 4, 13)
+    user_modifiers = user_modifiers or BattleModifiers()
+    opponent_modifiers = opponent_modifiers or BattleModifiers()
+    user_shots = max(3, random.randint(7, 14) + max(0, user_ovr - opponent_ovr) // 8 + user_modifiers.shots_bonus - opponent_modifiers.opponent_shots_reduction)
+    opponent_shots = max(3, random.randint(7, 14) + max(0, opponent_ovr - user_ovr) // 8 + opponent_modifiers.shots_bonus - user_modifiers.opponent_shots_reduction)
+    user_goal_chance = clamp(7 + (user_ovr - opponent_ovr) + user_modifiers.goal_chance_bonus - opponent_modifiers.opponent_goal_chance_reduction, 3, 22)
+    opponent_goal_chance = clamp(7 + (opponent_ovr - user_ovr) + opponent_modifiers.goal_chance_bonus - user_modifiers.opponent_goal_chance_reduction, 3, 22)
 
     user_goals = sum(1 for _ in range(user_shots) if random.randint(1, 100) <= user_goal_chance)
     opponent_goals = sum(1 for _ in range(opponent_shots) if random.randint(1, 100) <= opponent_goal_chance)
-    possession_user = clamp(50 + (user_ovr - opponent_ovr) + random.randint(-7, 7), 38, 62)
+    possession_user = clamp(50 + (user_ovr - opponent_ovr) + user_modifiers.possession_bonus - opponent_modifiers.possession_bonus + random.randint(-7, 7), 32, 68)
     title = f"Период {number}"
 
     summary = MatchPeriodSummary(
@@ -357,7 +364,7 @@ def apply_league_progress(league: str, points: int, delta: int) -> tuple[str, in
         current_points -= LEAGUE_STEP_POINTS
         league_index += 1
         current_league = LEAGUES[league_index]
-        rank_points_reward += 2 if current_league == "OLYMPICS" else 1
+        rank_points_reward += {"AHL": 3, "NHL": 7, "OLYMPICS": 15}.get(current_league, 0)
 
         if current_league == "OLYMPICS":
             current_points = 0
@@ -435,27 +442,135 @@ def row_to_queue_opponent(row) -> MatchQueuedOpponent:
     )
 
 
+def _special_fireside_holders(cards: list[LineupCard]) -> dict[str, list[LineupCard]]:
+    ids = [int(card.user_card_id) for card in cards if int(card.user_card_id) > 0]
+    installed = get_installed_xfactor_codes(ids) if ids else {}
+    result: dict[str, list[LineupCard]] = {"firescore": [], "heatwave": [], "last_spark": []}
+    for card in cards:
+        codes = installed.get(int(card.user_card_id), [])
+        for code in result:
+            if code in codes:
+                result[code].append(card)
+    return result
+
+
+def _has_goal_for(events: list[MatchEventInfo], player_name: str) -> bool:
+    needle = player_name.lower()
+    return any(event.event_type == "GOAL" and needle in event.description.lower() for event in events)
+
+
+def _append_forced_goal(periods: list[MatchPeriodSummary], events: list[MatchEventInfo], *, for_user: bool, player_name: str, factor_name: str, time_text: str) -> None:
+    if not periods:
+        return
+    index = len(periods) - 1
+    current = periods[index]
+    periods[index] = MatchPeriodSummary(
+        title=current.title,
+        user_goals=current.user_goals + (1 if for_user else 0),
+        opponent_goals=current.opponent_goals + (0 if for_user else 1),
+        user_shots=current.user_shots,
+        opponent_shots=current.opponent_shots,
+        possession_user=current.possession_user,
+    )
+    description = f"{factor_name}: {player_name} реализует специальный бросок" if for_user else f"Соперник активирует {factor_name}: {player_name}"
+    events.append(MatchEventInfo(current.title, time_text, "GOAL", description))
+
+
 def build_simulation(
     user_ovr: int,
     opponent_ovr: int,
     lineup_cards: list[LineupCard],
     opponent_name: str,
+    opponent_lineup_cards: list[LineupCard] | None = None,
+    use_xfactors: bool = False,
 ) -> tuple[int, int, bool, bool, list[MatchPeriodSummary], list[MatchEventInfo]]:
     periods: list[MatchPeriodSummary] = []
     events: list[MatchEventInfo] = []
+    user_modifiers = get_lineup_battle_modifiers(lineup_cards) if use_xfactors else BattleModifiers()
+    opponent_cards = opponent_lineup_cards or []
+    opponent_modifiers = get_lineup_battle_modifiers(opponent_cards) if use_xfactors else BattleModifiers()
+    user_special = _special_fireside_holders(lineup_cards) if use_xfactors else {"firescore": [], "heatwave": [], "last_spark": []}
+    opponent_special = _special_fireside_holders(opponent_cards) if use_xfactors else {"firescore": [], "heatwave": [], "last_spark": []}
+
+    if use_xfactors:
+        for name in active_factor_names(user_modifiers)[:9]:
+            events.append(MatchEventInfo("X-Factors", "00:00", "XFACTOR", f"Активен X-Factor: {name}"))
+        for name in active_factor_names(opponent_modifiers)[:9]:
+            events.append(MatchEventInfo("X-Factors", "00:00", "XFACTOR", f"Соперник активирует X-Factor: {name}"))
+
+    effective_user_ovr = int(user_ovr)
+    effective_opponent_ovr = int(opponent_ovr)
+    user_heatwave_activated: set[int] = set()
+    opponent_heatwave_activated: set[int] = set()
 
     for number in range(1, 4):
-        period, period_events = simulate_period(number, user_ovr, opponent_ovr, lineup_cards, opponent_name)
+        period, period_events = simulate_period(
+            number, effective_user_ovr, effective_opponent_ovr, lineup_cards, opponent_name,
+            user_modifiers, opponent_modifiers
+        )
         periods.append(period)
         events.extend(period_events)
 
+        # Firescore: the player's first shot of the match is a 100% goal. The
+        # simulator is period-based rather than shot-by-shot, so Period 1 is the
+        # earliest shot window. If that exact player did not already score there,
+        # force one goal and record the activation. One installed copy = one player.
+        if number == 1:
+            for idx, card in enumerate(user_special["firescore"]):
+                if not _has_goal_for(period_events, card.name):
+                    _append_forced_goal(periods, events, for_user=True, player_name=card.name, factor_name="Firescore", time_text=f"00:{10+idx:02d}")
+                else:
+                    events.append(MatchEventInfo(period.title, f"00:{10+idx:02d}", "XFACTOR", f"Firescore: первый бросок {card.name} становится голом"))
+            for idx, card in enumerate(opponent_special["firescore"]):
+                # Opponent goal events do not carry exact player names, therefore a
+                # holder's first-shot guarantee is represented as one guaranteed goal.
+                _append_forced_goal(periods, events, for_user=False, player_name=card.name, factor_name="Firescore", time_text=f"00:{20+idx:02d}")
+
+        # Heatwave: after this exact player's first goal, the card gains +3 OVR.
+        # Match probability is team-OVR based, so each +3 individual boost maps to
+        # +1 effective team OVR for subsequent periods (3 / six-card lineup).
+        for card in user_special["heatwave"]:
+            if card.user_card_id not in user_heatwave_activated and _has_goal_for(period_events, card.name):
+                user_heatwave_activated.add(card.user_card_id)
+                effective_user_ovr += 1
+                events.append(MatchEventInfo(period.title, "19:55", "XFACTOR", f"Heatwave: {card.name} получает +3 OVR до конца матча"))
+        if period.opponent_goals > 0:
+            for card in opponent_special["heatwave"]:
+                if card.user_card_id not in opponent_heatwave_activated:
+                    opponent_heatwave_activated.add(card.user_card_id)
+                    effective_opponent_ovr += 1
+                    events.append(MatchEventInfo(period.title, "19:56", "XFACTOR", f"Соперник активирует Heatwave: {card.name} +3 OVR"))
+
+    user_score = sum(period.user_goals for period in periods)
+    opponent_score = sum(period.opponent_goals for period in periods)
+
+    # Last Spark: in the final five minutes while tied/trailing, the holder's next
+    # shot has a 70% goal chance. One trigger per installed card, once per match.
+    if user_special["last_spark"] and user_score <= opponent_score:
+        for idx, card in enumerate(user_special["last_spark"]):
+            if user_score > opponent_score:
+                break
+            if random.random() < 0.70:
+                _append_forced_goal(periods, events, for_user=True, player_name=card.name, factor_name="Last Spark", time_text=f"19:{40+idx:02d}")
+                user_score += 1
+            else:
+                events.append(MatchEventInfo("Период 3", f"19:{40+idx:02d}", "XFACTOR", f"Last Spark: бросок {card.name} не реализован"))
+    if opponent_special["last_spark"] and opponent_score <= user_score:
+        for idx, card in enumerate(opponent_special["last_spark"]):
+            if opponent_score > user_score:
+                break
+            if random.random() < 0.70:
+                _append_forced_goal(periods, events, for_user=False, player_name=card.name, factor_name="Last Spark", time_text=f"19:{50+idx:02d}")
+                opponent_score += 1
+
+    # Recompute after possible forced event goals.
     user_score = sum(period.user_goals for period in periods)
     opponent_score = sum(period.opponent_goals for period in periods)
     is_overtime = False
     is_shootout = False
 
     if user_score == opponent_score:
-        user_wins_extra = weighted_success(user_ovr, opponent_ovr)
+        user_wins_extra = weighted_success(user_ovr + user_modifiers.overtime_bonus, opponent_ovr + opponent_modifiers.overtime_bonus)
 
         if random.random() < 0.65:
             is_overtime = True
@@ -748,6 +863,7 @@ async def save_match_result(
     events: list[MatchEventInfo],
     mvp_title: str,
     apply_normal_progression: bool = True,
+    lineup_cards: list[LineupCard] | None = None,
 ) -> MatchPlayResult:
     is_win = user_score > opponent_score
     result = "win" if is_win else "loss"
@@ -827,6 +943,25 @@ async def save_match_result(
             """,
             [(match_id, event.period_title, event.time_text, event.event_type, event.description) for event in events],
         )
+
+        if apply_normal_progression and lineup_cards:
+            from app.services.mastery import award_mastery_for_match
+            award_mastery_for_match(
+                connection, user_id=profile.id, match_id=match_id, lineup_cards=lineup_cards, is_win=is_win
+            )
+
+            from app.services.release_2026_09 import process_heroes_normal_match
+            process_heroes_normal_match(
+                connection,
+                user_id=profile.id,
+                match_id=match_id,
+                lineup_cards=lineup_cards,
+                user_score=user_score,
+                opponent_score=opponent_score,
+                is_win=is_win,
+                periods=periods,
+                events=events,
+            )
 
         if apply_normal_progression:
             connection.execute(
@@ -955,6 +1090,7 @@ async def play_quick_match(telegram_id: int) -> MatchPlayResult:
             opponent_ovr=opponent_ovr,
             lineup_cards=lineup_cards,
             opponent_name=opponent_name,
+            use_xfactors=True,
         )
         mvp_title = choose_scorer(lineup_cards, "Игрок матча") if user_score > opponent_score else f"Лидер {opponent_name}"
 
@@ -972,6 +1108,7 @@ async def play_quick_match(telegram_id: int) -> MatchPlayResult:
             periods=periods,
             events=events,
             mvp_title=mvp_title,
+            lineup_cards=lineup_cards,
         )
     except Exception:
         await match_guard.cancel_match(profile.id, reason="NORMAL_MATCH_ERROR")
@@ -1072,6 +1209,7 @@ async def play_player_match(
             return None, None
 
         first_cards = [card for card in first_overview.slots.values() if card is not None]
+        second_cards = [card for card in second_overview.slots.values() if card is not None]
         first_ovr = first_overview.final_overall or first_overview.average_overall
         second_ovr = second_overview.final_overall or second_overview.average_overall
         first_score, second_score, is_overtime, is_shootout, periods, events = build_simulation(
@@ -1079,6 +1217,8 @@ async def play_player_match(
             opponent_ovr=second_ovr,
             lineup_cards=first_cards,
             opponent_name=second_profile.nickname,
+            opponent_lineup_cards=second_cards,
+            use_xfactors=(match_type == "normal_pvp"),
         )
         first_mvp = choose_scorer(first_cards, "Игрок матча") if first_score > second_score else f"Лидер {second_profile.nickname}"
         second_mvp = f"Лидер {second_profile.nickname}" if first_score <= second_score else choose_scorer(first_cards, "Игрок матча")
@@ -1106,6 +1246,7 @@ async def play_player_match(
             events=events,
             mvp_title=first_mvp,
             apply_normal_progression=apply_normal_progression,
+            lineup_cards=first_cards,
         )
         second_result = await save_match_result(
             profile=second_profile,
@@ -1122,6 +1263,7 @@ async def play_player_match(
             events=second_events,
             mvp_title=second_mvp,
             apply_normal_progression=apply_normal_progression,
+            lineup_cards=second_cards,
         )
     except Exception:
         await match_guard.release_two_player_match_lock(lock, reason="PVP_MATCH_ERROR")

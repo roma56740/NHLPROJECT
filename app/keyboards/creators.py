@@ -52,8 +52,6 @@ def build_creator_bank_add_keyboard(has_currencies: bool, has_packs: bool) -> In
     rows: list[list[InlineKeyboardButton]] = []
     if has_currencies:
         rows.append([InlineKeyboardButton(text="💱 Добавить валюту", callback_data="creator:add_currency")])
-    if has_packs:
-        rows.append([InlineKeyboardButton(text="🎁 Добавить пак", callback_data="creator:add_pack")])
     rows.append([InlineKeyboardButton(text="🃏 Добавить карту по ID", callback_data="creator:add_card")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="creator:panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

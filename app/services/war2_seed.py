@@ -207,5 +207,5 @@ def _seed_modes(connection: sqlite3.Connection) -> None:
 def seed_war2_content(connection: sqlite3.Connection) -> None:
     collection_id = _seed_collection(connection)
     card_ids = _seed_cards(connection, collection_id)
-    _seed_packs(connection, card_ids)
+    # Legacy Pack rewards are retired; Clan War content keeps cards/modes only.
     _seed_modes(connection)

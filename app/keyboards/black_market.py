@@ -10,7 +10,7 @@ from app.services.black_market_generation import RotationInfo
 from app.texts import black_market as texts
 
 STOREFRONT_PAGE_SIZE = 4
-ITEM_TYPE_CHOICES = ("card", "frame", "background", "prefix", "pack", "currency")
+ITEM_TYPE_CHOICES = ("card", "background", "prefix", "currency")
 
 
 def back_row(callback_data: str = "bm:main") -> list[InlineKeyboardButton]:
@@ -119,10 +119,8 @@ def build_admin_refresh_all_confirm_keyboard() -> InlineKeyboardMarkup:
 def build_add_item_type_keyboard() -> InlineKeyboardMarkup:
     labels = {
         "card": "🃏 CARD",
-        "frame": "🖼 FRAME",
         "background": "🌆 BACKGROUND",
         "prefix": "🏷 ПРИПИСКА К НИКУ",
-        "pack": "🎁 PACK",
         "currency": "🪙 CURRENCY",
     }
     keyboard = [[InlineKeyboardButton(text=labels[choice], callback_data=f"bm_admin:add_item:type:{choice}")] for choice in ITEM_TYPE_CHOICES]
@@ -140,8 +138,7 @@ def build_cosmetic_source_keyboard() -> InlineKeyboardMarkup:
 
 
 def build_choice_keyboard(rows: list[tuple[str, str]], back_callback: str) -> InlineKeyboardMarkup:
-    """`rows` — список (label, callback_data). Общий билдер для выбора карты/пака/
-    валюты/косметики из уже существующих сущностей."""
+    """`rows` — список (label, callback_data). Общий билдер для выбора карты/валюты/косметики из уже существующих сущностей."""
     keyboard = [[InlineKeyboardButton(text=label, callback_data=callback_data)] for label, callback_data in rows]
     keyboard.append(back_row(back_callback))
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

@@ -376,19 +376,19 @@ def get_league_progress_items() -> list[LeagueProgressItem]:
             code="NCAA",
             title="NCAA",
             description="Стартовая лига. Здесь начинается путь клуба.",
-            reward="Переход в AHL: 1 Rank-point",
+            reward="Переход в AHL: 3 Rank Coins",
         ),
         LeagueProgressItem(
             code="AHL",
             title="AHL",
             description="Вторая ступень. Соперники становятся сильнее.",
-            reward="Переход в NHL: 1 Rank-point",
+            reward="Переход в NHL: 7 Rank Coins",
         ),
         LeagueProgressItem(
             code="NHL",
             title="NHL",
             description="Главная лига перед олимпийским уровнем.",
-            reward="Переход в OLYMPICS: 2 Rank-point",
+            reward="Переход в OLYMPICS: 15 Rank Coins",
         ),
         LeagueProgressItem(
             code="OLYMPICS",

@@ -343,14 +343,8 @@ async def get_equipped_background_path(user_id: int) -> str | None:
 
 
 async def get_equipped_frame_path(user_id: int) -> str | None:
-    """Deprecated global frame API.
-
-    Frames are no longer painted over every card.  They are inventory copies
-    bound to one concrete card, so callers receive ``None`` and renderers load
-    per-card bindings instead.
-    """
+    # Card frames were retired in Nexcore release 2026-09.
     return None
-
 
 async def get_equipped_badge_text(user_id: int) -> str | None:
     item = await _get_equipped(user_id, "NICK_BADGE")

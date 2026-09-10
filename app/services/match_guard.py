@@ -66,6 +66,7 @@ MATCH_TYPE_TTL_SECONDS: dict[str, int] = {
     "stronghold_endless": 300,
     "tournament": 300,
     "war2": 1800,
+    "cursed_mirror": 300,
     "legacy": 300,
 }
 
@@ -201,6 +202,11 @@ async def _check_match_status(match_type: str, match_id: int | None) -> str:
     if match_type == "ranked":
         with get_connection() as connection:
             row = connection.execute("SELECT id FROM ranked_matches WHERE id = ?", (match_id,)).fetchone()
+        return "completed" if row is not None else "missing"
+
+    if match_type == "cursed_mirror":
+        with get_connection() as connection:
+            row = connection.execute("SELECT id FROM cursed_mirror_matches WHERE id = ?", (match_id,)).fetchone()
         return "completed" if row is not None else "missing"
 
     if match_type in ("normal", "normal_pvp", "tournament", "stronghold_fortress", "stronghold_endless", "legacy"):

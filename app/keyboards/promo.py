@@ -37,16 +37,13 @@ def build_admin_promo_view_keyboard(promo: PromoCodeInfo) -> InlineKeyboardMarku
     toggle = "🔴 Отключить" if promo.active else "🟢 Включить"
     keyboard = [
         [InlineKeyboardButton(text="🪙 Coins", callback_data=f"admin_promo:edit_coins:{promo.id}")],
-        [InlineKeyboardButton(text="💵 Рубли", callback_data=f"admin_promo:edit_rubles:{promo.id}")],
+        [InlineKeyboardButton(text="⚡ Energy", callback_data=f"admin_promo:edit_rubles:{promo.id}")],
         [InlineKeyboardButton(text="🎟 BP Points", callback_data=f"admin_promo:edit_bp:{promo.id}")],
-        [InlineKeyboardButton(text="🎁 Пак", callback_data=f"admin_promo:pack:{promo.id}")],
         [InlineKeyboardButton(text="🔢 Лимит активаций", callback_data=f"admin_promo:edit_max:{promo.id}")],
         [InlineKeyboardButton(text="👤 Лимит на игрока", callback_data=f"admin_promo:edit_per_user:{promo.id}")],
         [InlineKeyboardButton(text="📅 Срок действия", callback_data=f"admin_promo:edit_expires:{promo.id}")],
         [InlineKeyboardButton(text=toggle, callback_data=f"admin_promo:toggle:{promo.id}")],
     ]
-    if promo.pack_id is not None:
-        keyboard.append([InlineKeyboardButton(text="🚫 Убрать пак", callback_data=f"admin_promo:clear_pack:{promo.id}")])
     keyboard.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin_promo:delete_confirm:{promo.id}")])
     keyboard.append([InlineKeyboardButton(text="⬅️ К списку", callback_data="admin_promo:main")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

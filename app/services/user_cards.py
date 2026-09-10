@@ -28,6 +28,7 @@ class PlayerCardProfile:
     card_id: int
     user_id: int
     name: str
+    player_key: str
     position: str
     overall: int
     team: str
@@ -238,6 +239,7 @@ async def get_player_cards_page(
                 user_cards.is_in_lineup,
                 user_cards.trade_locked,
                 cards.name,
+                cards.player_key,
                 cards.position,
                 cards.overall,
                 cards.team,
@@ -311,6 +313,7 @@ async def get_player_card_profile(
                 user_cards.obtained_from,
                 user_cards.created_at,
                 cards.name,
+                cards.player_key,
                 cards.position,
                 cards.overall,
                 cards.team,
@@ -339,6 +342,7 @@ async def get_player_card_profile(
         card_id=row["card_id"],
         user_id=row["user_id"],
         name=row["name"],
+        player_key=row["player_key"],
         position=row["position"],
         overall=row["overall"],
         team=row["team"],

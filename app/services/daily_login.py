@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 from app.database.db import get_connection
 from app.services.rewards import grant_currency, grant_pack
+from app.services.miniapp_runtime import miniapp_only_mode_enabled
 
 LADDER_LENGTH = 7
 
@@ -162,7 +163,8 @@ async def claim_daily(user_id: int) -> tuple[DailyClaimResult | None, str | None
         pack_id = reward_row["pack_id"]
 
         grant_currency(connection, user_id, "coins", coins)
-        grant_currency(connection, user_id, "energy", rubles)  # energy = Рубли (display)
+        if not miniapp_only_mode_enabled():
+            grant_currency(connection, user_id, "energy", rubles)  # legacy reward; frozen in MiniApp-only mode
         pack_name = None
         if pack_id is not None:
             if grant_pack(connection, user_id, int(pack_id), 1):

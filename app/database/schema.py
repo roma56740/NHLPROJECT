@@ -128,8 +128,8 @@ DEFAULT_GAME_SETTINGS = [
     {
         "key": "start_energy",
         "value": "0",
-        "title": "Стартовые Рубли",
-        "description": "Рубли для нового игрока.",
+        "title": "Стартовая Energy",
+        "description": "Energy для нового игрока. В production держать 0.",
     },
     {
         "key": "start_rank_points",
@@ -1484,15 +1484,15 @@ DEFAULT_CURRENCIES = [
     },
     {
         "code": "energy",
-        "name": "Рубли",
-        "icon": "💵",
-        "description": "Премиальная валюта. За покупкой обращаться к @E4RFQ.",
+        "name": "Energy",
+        "icon": "⚡",
+        "description": "Премиальная валюта Nexcore. Покупка через @teyld.",
     },
     {
         "code": "rank_point",
-        "name": "Rank-point",
+        "name": "Rank Coin",
         "icon": "🏅",
-        "description": "Валюта для рейтинговых паков.",
+        "description": "Редкая игровая валюта.",
     },
     {
         "code": "fortress_token",

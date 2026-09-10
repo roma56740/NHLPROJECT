@@ -702,6 +702,54 @@ def render_collection_image(cards_page: PlayerCardsPage, user_id: int) -> Path:
     return output
 
 
+
+
+def _transparent_white_background(image: Image.Image) -> Image.Image:
+    rgba = image.convert("RGBA")
+    data = []
+    for r, g, b, a in rgba.getdata():
+        if r > 245 and g > 245 and b > 245:
+            data.append((255, 255, 255, 0))
+        else:
+            data.append((r, g, b, a))
+    rgba.putdata(data)
+    return rgba
+
+
+def _draw_profile_xfactors(image: Image.Image, user_card_id: int) -> None:
+    if not user_card_id:
+        return
+    try:
+        from app.services.xfactors import get_installed_xfactors
+        installed = get_installed_xfactors(int(user_card_id))
+    except Exception:
+        installed = []
+    if not installed:
+        return
+    icon_size = 126
+    # The card visual's right edge is around x=800 on this 900px profile canvas.
+    # Centering icons at x=806 makes them sit on top of the card and protrude slightly.
+    x = 743
+    start_y = 330 if len(installed) == 3 else (405 if len(installed) == 2 else 480)
+    for index, item in enumerate(installed[:3]):
+        path = resolve_asset_path(item.xfactor.icon_path)
+        if path is None:
+            continue
+        try:
+            icon = Image.open(path).convert("RGBA")
+            icon = _transparent_white_background(icon)
+            icon = ImageOps.contain(icon, (icon_size, icon_size), method=Image.Resampling.LANCZOS)
+            # soft shadow so the icon remains readable over any card art
+            shadow = Image.new("RGBA", (icon_size + 24, icon_size + 24), (0, 0, 0, 0))
+            sd = ImageDraw.Draw(shadow, "RGBA")
+            sd.ellipse((12, 12, icon_size + 12, icon_size + 12), fill=(0, 0, 0, 100))
+            shadow = shadow.filter(ImageFilter.GaussianBlur(9))
+            y = start_y + index * 150
+            image.alpha_composite(shadow, dest=(x - 12, y - 12))
+            image.alpha_composite(icon, dest=(x, y))
+        except Exception:
+            continue
+
 def render_card_profile_image(card: Any, user_id: int = 0) -> Path:
     cfg = get_render_theme_config()
     size = (900, 1400)
@@ -723,6 +771,7 @@ def render_card_profile_image(card: Any, user_id: int = 0) -> Path:
     _draw_glass_panel(image, (center[0] - card_size[0] // 2 - 18, 174, center[0] + card_size[0] // 2 + 18, 174 + card_size[1] + 36), radius=28, fill=(4, 8, 15, 160), outline=(*accent_rgb, 68), width=2)
     frame_path = _card_bound_frame(card, _bound_frame_paths([card]))
     _paste_shadowed_card(image, card, center, card_size, frame_override_path=frame_path)
+    _draw_profile_xfactors(image, int(getattr(card, "id", getattr(card, "user_card_id", 0)) or 0))
 
     _draw_glass_panel(image, (44, 1214, 856, 1360), radius=24, fill=(4, 9, 16, 214))
     fields = [

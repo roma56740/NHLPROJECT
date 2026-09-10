@@ -15,22 +15,21 @@ from app.keyboards.main_menu import (
 # из 10+ строк и делает первый шаг очевидным.
 USER_MAIN_BUTTONS: list[list[str]] = [
     ["🎮 Играть", "🧩 Команда"],
-    ["🎁 Паки", "🎯 Мой прогресс"],
+    ["📦 Боксы", "🎯 Мой прогресс"],
     ["🛒 Магазин", "👥 Сообщество"],
     ["👤 Профиль", "ℹ️ Как играть"],
     ["🏠 Главная"],
 ]
 
 USER_GAMES_BUTTONS: list[list[str]] = [
-    ["🏒 Играть", "🏆 Ranked Mode"],
-    ["🏰 THE STRONGHOLD", "⚔️ CLAN WAR 2.0"],
+    ["🏒 Играть", "⚔️ CLAN WAR 2.0"],
     ["🕶 Чёрный рынок"],
     ["⬅️ Главное меню"],
 ]
 
 USER_TEAM_BUTTONS: list[list[str]] = [
     ["🧩 Состав", "🃏 Карты"],
-    ["🎨 Косметика", "🎁 Паки"],
+    ["🎨 Косметика", "📦 Боксы"],
     ["⬅️ Главное меню"],
 ]
 
@@ -59,19 +58,18 @@ ADMIN_MAIN_BUTTONS: list[list[str]] = [
 ]
 
 ADMIN_CONTENT_BUTTONS: list[list[str]] = [
-    ["🃏 Карточки", "🎁 Паки"],
-    ["🎨 Управление косметикой", "🎬 Видео паков"],
+    ["🃏 Карточки", "📦 Боксы"],
+    ["🎨 Управление косметикой"],
     ["🏁 Стартовый набор"],
     ["🏒 Дивизионы", "🧪 Химия"],
     ["⬅️ Админ-центр"],
 ]
 
 ADMIN_MODES_BUTTONS: list[list[str]] = [
-    ["🏆 Админка Ranked", "🏰 THE STRONGHOLD"],
-    ["🕐 Расписание Stronghold", "⚔️ Админка Clan War 2.0"],
-    ["🤖 Диагностика ботов", "🎪 События"],
-    ["🏟 Арены"],
-    ["🏆 Лиги и рейтинг", "🕶 Чёрный рынок"],
+    ["⚔️ Админка Clan War 2.0", "🎪 События"],
+    ["🏟 Арены", "🏆 Лиги и рейтинг"],
+    ["🤖 Диагностика ботов"],
+    ["🕶 Чёрный рынок"],
     ["⬅️ Админ-центр"],
 ]
 
@@ -169,7 +167,7 @@ def build_admin_main_keyboard(user_id: int | None = None):
 
 
 def build_admin_content_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:
-    return _build_admin_keyboard(ADMIN_CONTENT_BUTTONS, user_id, "Карты, паки и игровые данные")
+    return _build_admin_keyboard(ADMIN_CONTENT_BUTTONS, user_id, "Карты, боксы и игровые данные")
 
 
 def build_admin_modes_keyboard(user_id: int | None = None) -> ReplyKeyboardMarkup:

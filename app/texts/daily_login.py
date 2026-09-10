@@ -16,7 +16,7 @@ def reward_line(reward: DailyRewardDef) -> str:
     if reward.coins > 0:
         parts.append(f"🪙 {reward.coins:,}".replace(",", " "))
     if reward.rubles > 0:
-        parts.append(f"💵 {reward.rubles:,}".replace(",", " "))
+        parts.append(f"⚡ {reward.rubles:,}".replace(",", " "))
     if reward.pack_name:
         parts.append(f"🎁 {reward.pack_name}")
     return " + ".join(parts) if parts else "—"
@@ -45,7 +45,7 @@ def build_daily_claim_text(result: DailyClaimResult) -> str:
     if result.coins > 0:
         parts.append(f"🪙 Coins: <b>+{result.coins:,}</b>".replace(",", " "))
     if result.rubles > 0:
-        parts.append(f"💵 Рубли: <b>+{result.rubles:,}</b>".replace(",", " "))
+        parts.append(f"⚡ Energy: <b>+{result.rubles:,}</b>".replace(",", " "))
     if result.pack_name:
         parts.append(f"🎁 Пак: <b>{result.pack_name}</b>")
     body = "\n".join(parts) if parts else "—"
@@ -80,7 +80,7 @@ def build_admin_day_text(reward: DailyRewardDef) -> str:
     return (
         f"<b>📅 День {reward.day}</b>\n\n"
         f"🪙 Coins: <b>{reward.coins:,}</b>\n"
-        f"💵 Рубли: <b>{reward.rubles}</b>\n"
+        f"⚡ Energy: <b>{reward.rubles}</b>\n"
         f"🎁 Пак: <b>{pack}</b>\n\n"
         f"Что изменить?"
     ).replace(",", " ")

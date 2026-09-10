@@ -17,7 +17,7 @@ def build_promo_success_text(reward: PromoReward) -> str:
     if reward.coins > 0:
         parts.append(f"🪙 Coins: <b>+{reward.coins:,}</b>".replace(",", " "))
     if reward.rubles > 0:
-        parts.append(f"💵 Рубли: <b>+{reward.rubles:,}</b>".replace(",", " "))
+        parts.append(f"⚡ Energy: <b>+{reward.rubles:,}</b>".replace(",", " "))
     if reward.bp_points > 0:
         parts.append(f"🎟 BP Points: <b>+{reward.bp_points}</b>")
     if reward.pack_name:
@@ -43,7 +43,7 @@ ADMIN_PROMO_CREATE_CODE_TEXT = """
 """.strip()
 
 ADMIN_PROMO_CREATE_COINS_TEXT = "<b>🎫 Шаг 2 из 4</b>\n\nВведи количество Coins (0 — без монет)."
-ADMIN_PROMO_CREATE_RUBLES_TEXT = "<b>🎫 Шаг 3 из 4</b>\n\nВведи количество Рублей (0 — без рублей)."
+ADMIN_PROMO_CREATE_RUBLES_TEXT = "<b>🎫 Шаг 3 из 4</b>\n\nВведи количество Рублей (0 — без Energy)."
 ADMIN_PROMO_CREATE_MAX_TEXT = "<b>🎫 Шаг 4 из 4</b>\n\nОбщий лимит активаций (0 — без лимита)."
 
 
@@ -69,7 +69,7 @@ def build_admin_promo_text(promo: PromoCodeInfo) -> str:
     if promo.coins > 0:
         reward_parts.append(f"🪙 {promo.coins:,}".replace(",", " "))
     if promo.rubles > 0:
-        reward_parts.append(f"💵 {promo.rubles}")
+        reward_parts.append(f"⚡ {promo.rubles}")
     if promo.bp_points > 0:
         reward_parts.append(f"🎟 BP {promo.bp_points}")
     if promo.pack_name:

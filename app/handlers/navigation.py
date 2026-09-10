@@ -115,6 +115,34 @@ async def _open_profile(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+RETIRED_PREFIXES = (
+    "packs:", "admin_packs:", "ranked:", "admin_ranked:",
+    "stg:", "admin_stronghold:", "dna:", "hpass:",
+    "cosmetics:frames", "cosmetics:frame:", "cosmetics:frame_",
+    "admin_users:give_pack", "creator:add_pack", "creator:pack_pick",
+    "admin_daily:pack:", "admin_daily:set_pack:", "admin_daily:clear_pack:",
+    "admin_promo:pack:", "admin_promo:set_pack:", "admin_promo:clear_pack:",
+    "bm_admin:add_item:type:frame", "bm_admin:add_item:type:pack", "bm_admin:add_item:pack:",
+)
+
+
+@router.callback_query(lambda callback: bool(callback.data) and str(callback.data).startswith(RETIRED_PREFIXES))
+async def retired_legacy_callback(callback: CallbackQuery) -> None:
+    data = str(callback.data or "")
+    if data.startswith("hpass:"):
+        from app.handlers import release_2026_09
+        await release_2026_09.show_pass(callback, 1)
+        await callback.answer()
+        return
+    if data.startswith(("packs:", "admin_packs:")):
+        await callback.answer("Паки выведены из игры. Используй Боксы.", show_alert=True)
+        return
+    if data.startswith(("cosmetics:frame",)):
+        await callback.answer("Рамки выведены из игры.", show_alert=True)
+        return
+    await callback.answer("Этот раздел выведен из игры.", show_alert=True)
+
+
 @router.callback_query(F.data.startswith("menu:open:"))
 async def open_inline_menu_target(callback: CallbackQuery, state: FSMContext) -> None:
     key = (callback.data or "").removeprefix("menu:open:")
@@ -133,42 +161,37 @@ async def open_inline_menu_target(callback: CallbackQuery, state: FSMContext) ->
         "matches": "matches:main",
         "lineup": "lineup:main",
         "cards": "user_cards:main",
-        "packs": "packs:main",
-        "ranked": "ranked:main",
-        "stronghold": "stg:main",
         "war2": "war2:main",
-        "dna": "dna:main",
         "black_market": "bm:main",
-        "shop": "shop:main",
+        "boxes": "release:boxes",
+        "shop": "release:shop",
         "cosmetics": "cosmetics:main",
+        "inventory": "inventory:main",
         "quests": "quests:main",
-        "hockey_pass": "hpass:main",
+        "hockey_pass": "release:pass",
         "daily": "daily:main",
         "free_card": "free_card:user",
         "rating": "rating:main",
-        "events": "events:user_list:1",
+        "events": "release:events",
+        "achievements": "release:achievements",
         "community": "community:main",
         "creators": "creator:intro",
         "profile": "profile:open",
         "admin_cards": "admin_cards:main",
-        "admin_packs": "admin_packs:main",
+        "admin_boxes": "release:boxes_admin",
+        "admin_energy_orders": "release:energy_admin",
         "admin_users": "admin_users:main",
         "admin_wallets": "admin_wallets:main",
-        "admin_ranked": "admin_ranked:main",
-        "admin_stronghold": "admin_stronghold:main",
         "admin_war2": "admin_war2:main",
         "admin_black_market": "bm_admin:main",
-        "admin_cosmetics": "admin_cosmetics:main",
+        "admin_cosmetics": "admin_war2:cos:BACKGROUND",
         "admin_maintenance": "admin_maintenance:main",
         "admin_match_locks": "admin_security:match_locks:1",
         "admin_panel": "admin_panel:main",
-        "admin_pack_videos": "admin_packs:videos:1",
         "admin_render": "admin_render:main",
         "admin_starter_kit": "starter_kit:main",
         "admin_divisions": "admin_divisions:main",
         "admin_chemistry": "chemistry:main",
-        "admin_stronghold_schedule": "admin_stronghold:schedule",
-        "admin_ranked_bots": "admin_ranked:bot_diag",
         "admin_events": "admin_events:main",
         "admin_rating": "admin_rating:main",
         "admin_clans": "admin_clans:list:1",
@@ -179,7 +202,6 @@ async def open_inline_menu_target(callback: CallbackQuery, state: FSMContext) ->
         "admin_salaries": "admin_salaries:main",
         "admin_rewards": "admin_rewards:main",
         "admin_quests": "admin_quests:main",
-        "admin_hockey_pass": "admin_hpass:main",
         "admin_daily": "admin_daily:main",
         "admin_promo": "admin_promo:main",
         "admin_free_card": "free_card:admin",
@@ -207,36 +229,30 @@ async def open_inline_menu_target(callback: CallbackQuery, state: FSMContext) ->
         elif key == "cards":
             from app.handlers import user_cards
             await user_cards.user_cards_main(forwarded, state)
-        elif key == "packs":
-            from app.handlers import packs
-            await packs.packs_main(forwarded, state)
-        elif key == "ranked":
-            from app.handlers import ranked
-            await ranked.ranked_main(forwarded)
-        elif key == "stronghold":
-            from app.handlers import stronghold
-            await stronghold.stronghold_main_callback(forwarded, state)
         elif key == "war2":
             from app.handlers import war2
             await war2.war2_main(forwarded)
-        elif key == "dna":
-            from app.handlers import dna_event
-            await dna_event.dna_main(forwarded)
         elif key == "black_market":
             from app.handlers import black_market
             await black_market.black_market_main_callback(forwarded, state)
+        elif key == "boxes":
+            from app.handlers import release_2026_09
+            await release_2026_09.show_boxes(forwarded)
         elif key == "shop":
-            from app.handlers import shop
-            await shop.shop_main_callback(forwarded)
+            from app.handlers import release_2026_09
+            await release_2026_09.show_shop(forwarded)
         elif key == "cosmetics":
             from app.handlers import cosmetics
             await cosmetics.cosmetics_main(forwarded, state)
+        elif key == "inventory":
+            from app.handlers import inventory
+            await inventory.inventory_main(forwarded)
         elif key == "quests":
             from app.handlers import quests
             await quests.quests_main(forwarded, state)
         elif key == "hockey_pass":
-            from app.handlers import hockey_pass
-            await hockey_pass.user_hpass_main(forwarded, state)
+            from app.handlers import release_2026_09
+            await release_2026_09.show_pass(forwarded, 1)
         elif key == "daily":
             from app.handlers import daily_login
             await daily_login.daily_main(forwarded, state)
@@ -247,8 +263,11 @@ async def open_inline_menu_target(callback: CallbackQuery, state: FSMContext) ->
             from app.handlers import rating
             await rating.rating_main(forwarded, state)
         elif key == "events":
-            from app.handlers import events
-            await events.user_events_list(forwarded)
+            from app.handlers import release_2026_09
+            await release_2026_09.show_events(forwarded)
+        elif key == "achievements":
+            from app.handlers import release_2026_09
+            await release_2026_09.show_achievements(forwarded)
         elif key == "community":
             from app.handlers import community
             await community.community_main(forwarded, state)
@@ -260,21 +279,18 @@ async def open_inline_menu_target(callback: CallbackQuery, state: FSMContext) ->
         elif key == "admin_cards":
             from app.handlers import admin_cards
             await admin_cards.admin_cards_main(forwarded, state)
-        elif key == "admin_packs":
-            from app.handlers import packs
-            await packs.admin_packs_main(forwarded, state)
+        elif key == "admin_boxes":
+            from app.handlers import release_2026_09
+            await release_2026_09.show_boxes_admin(forwarded)
+        elif key == "admin_energy_orders":
+            from app.handlers import release_2026_09
+            await release_2026_09.show_energy_admin(forwarded)
         elif key == "admin_users":
             from app.handlers import admin_users
             await admin_users.admin_users_main(forwarded, state)
         elif key == "admin_wallets":
             from app.handlers import admin_wallets
             await admin_wallets.admin_wallets_main(forwarded, state)
-        elif key == "admin_ranked":
-            from app.handlers import admin_ranked
-            await admin_ranked.admin_ranked_main(forwarded)
-        elif key == "admin_stronghold":
-            from app.handlers import admin_stronghold
-            await admin_stronghold.admin_stronghold_main(forwarded, state)
         elif key == "admin_war2":
             from app.handlers import admin_war2
             await admin_war2.admin_war2_main(forwarded)
@@ -282,8 +298,8 @@ async def open_inline_menu_target(callback: CallbackQuery, state: FSMContext) ->
             from app.handlers import admin_black_market
             await admin_black_market.admin_dashboard_callback(forwarded, state)
         elif key == "admin_cosmetics":
-            from app.handlers import admin_ranked
-            await admin_ranked.admin_global_cosmetics_main(forwarded)
+            from app.handlers import admin_war2
+            await admin_war2.admin_war2_cosmetics_list(_copy_callback(forwarded, message=forwarded.message, data="admin_war2:cos:BACKGROUND"))
         elif key == "admin_maintenance":
             from app.handlers import admin_maintenance
             await admin_maintenance.admin_maintenance_main(forwarded, state)
@@ -293,9 +309,6 @@ async def open_inline_menu_target(callback: CallbackQuery, state: FSMContext) ->
         elif key == "admin_panel":
             from app.handlers import admin_panel
             await admin_panel.admin_panel_main_callback(forwarded, state)
-        elif key == "admin_pack_videos":
-            from app.handlers import packs
-            await packs.admin_pack_videos_page(forwarded, state)
         elif key == "admin_render":
             from app.handlers import admin_render
             await admin_render.admin_render_main(forwarded, state)
@@ -308,12 +321,6 @@ async def open_inline_menu_target(callback: CallbackQuery, state: FSMContext) ->
         elif key == "admin_chemistry":
             from app.handlers import admin_chemistry
             await admin_chemistry.chemistry_main(forwarded, state)
-        elif key == "admin_stronghold_schedule":
-            from app.handlers import admin_stronghold
-            await admin_stronghold.admin_stronghold_schedule(forwarded, state)
-        elif key == "admin_ranked_bots":
-            from app.handlers import admin_ranked
-            await admin_ranked.admin_ranked_bot_diagnostics(forwarded)
         elif key == "admin_events":
             from app.handlers import events
             await events.admin_events_main(forwarded, state)
@@ -344,9 +351,6 @@ async def open_inline_menu_target(callback: CallbackQuery, state: FSMContext) ->
         elif key == "admin_quests":
             from app.handlers import quests
             await quests.admin_quests_main(forwarded, state)
-        elif key == "admin_hockey_pass":
-            from app.handlers import hockey_pass
-            await hockey_pass.admin_hpass_main(forwarded, state)
         elif key == "admin_daily":
             from app.handlers import daily_login
             await daily_login.admin_daily_main(forwarded, state)
@@ -373,12 +377,8 @@ async def open_inline_menu_target(callback: CallbackQuery, state: FSMContext) ->
         # открытии. Для них отвечаем здесь; повторный answer в ошибочной ветке
         # безопасно игнорируется.
         if key in {
-            "ranked",
             "war2",
-            "admin_ranked",
             "admin_war2",
-            "admin_cosmetics",
-            "admin_ranked_bots",
         }:
             try:
                 await forwarded.answer()

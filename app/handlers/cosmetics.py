@@ -51,7 +51,6 @@ async def _edit_or_send(callback: CallbackQuery, text: str, keyboard: InlineKeyb
 
 def _main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🖼 Рамки карт", callback_data="cosmetics:frames")],
         [InlineKeyboardButton(text="🏞 Фоны профиля и состава", callback_data="cosmetics:list:PROFILE_BACKGROUND")],
         [InlineKeyboardButton(text="🏷 Приписки к нику", callback_data="cosmetics:list:NICK_BADGE")],
         [InlineKeyboardButton(text="🎖 Титулы", callback_data="cosmetics:list:TITLE")],
@@ -60,20 +59,16 @@ def _main_keyboard() -> InlineKeyboardMarkup:
 
 
 async def _main_text(user_id: int) -> str:
-    frames = await war2_cosmetics.get_user_cosmetics_page(user_id, "CARD_FRAME")
     backgrounds = await war2_cosmetics.get_user_cosmetics_page(user_id, "PROFILE_BACKGROUND")
     prefixes = await war2_cosmetics.get_user_cosmetics_page(user_id, "NICK_BADGE")
     titles = await war2_cosmetics.get_user_cosmetics_page(user_id, "TITLE")
-    bound = sum(1 for item in frames if item.bound_user_card_id is not None)
     return (
         "<b>🎨 Косметика</b>\n\n"
-        "Все предметы работают во всех режимах и являются отдельными экземплярами. "
+        "Фоны, приписки и титулы работают во всех режимах и являются отдельными экземплярами. "
         "Их можно покупать на Чёрном рынке и обменивать.\n\n"
-        f"🖼 Рамки: <b>{len(frames)}</b> · установлено <b>{bound}</b>\n"
         f"🏞 Фоны: <b>{len(backgrounds)}</b>\n"
         f"🏷 Приписки: <b>{len(prefixes)}</b>\n"
-        f"🎖 Титулы: <b>{len(titles)}</b>\n\n"
-        "Один экземпляр рамки можно поставить только на одну карту. Для второй карты нужен второй экземпляр."
+        f"🎖 Титулы: <b>{len(titles)}</b>"
     )
 
 

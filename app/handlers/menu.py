@@ -221,7 +221,7 @@ async def back_to_main_menu(callback: CallbackQuery) -> None:
 async def user_progress_menu(callback: CallbackQuery) -> None:
     await replace_with_menu_photo(
         callback,
-        "<b>🎯 Прогресс и награды</b>\n\nЗадания, пропуски, ежедневные награды, события и рейтинг.",
+        "<b>🎯 Прогресс и награды</b>\n\nЗадания, Fireside Season Pass, достижения, ежедневные награды, события и рейтинг.",
         build_user_progress_keyboard(),
     )
     await callback.answer()
@@ -242,11 +242,11 @@ async def user_help_menu(callback: CallbackQuery) -> None:
     await replace_with_menu_photo(
         callback,
         "<b>ℹ️ Как начать играть</b>\n\n"
-        "1️⃣ Забери бесплатную карту или открой пак.\n"
+        "1️⃣ Забери бесплатную карту или открой бокс.\n"
         "2️⃣ Открой «🧩 Состав» и заполни все позиции.\n"
         "3️⃣ Начни с обычного матча.\n"
         "4️⃣ Выполняй задания и забирай награды.\n\n"
-        "Ranked доступен с AHL. Stronghold и Clan War используют отдельные правила.",
+        "Играй обычные матчи, проходи Season Pass, HEROES и временные события. Clan War использует отдельные правила.",
         build_user_more_keyboard(),
     )
     await callback.answer()
@@ -273,7 +273,7 @@ async def admin_all_menu(callback: CallbackQuery) -> None:
 async def admin_content_menu(callback: CallbackQuery) -> None:
     await _admin_menu(
         callback,
-        "<b>🃏 Контент</b>\n\nКарты, паки, косметика, стартовый набор, дивизионы и химия.",
+        "<b>🃏 Контент</b>\n\nКарты, боксы, косметика, стартовый набор, дивизионы и химия.",
         build_admin_content_keyboard(callback.from_user.id),
     )
 
@@ -282,7 +282,7 @@ async def admin_content_menu(callback: CallbackQuery) -> None:
 async def admin_modes_menu(callback: CallbackQuery) -> None:
     await _admin_menu(
         callback,
-        "<b>🎮 Режимы</b>\n\nRanked, Stronghold, Clan War, события, лиги и Чёрный рынок.",
+        "<b>🎮 Режимы</b>\n\nClan War, HEROES, Cursed Mirror, лиги и Чёрный рынок.",
         build_admin_modes_keyboard(callback.from_user.id),
     )
 

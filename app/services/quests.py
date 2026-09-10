@@ -134,11 +134,11 @@ def get_period_key(period_type: str) -> str:
     if period_type == "daily":
         return get_daily_period_key()
 
-    return "season-1"
+    return "fireside-2026-09"
 
 
 def calculate_pass_level(bp_points: int) -> int:
-    return min(40, max(1, bp_points // 5 + 1))
+    return min(30, max(1, bp_points // 5 + 1))
 
 
 def normalize_code(value: str) -> str:
@@ -460,6 +460,9 @@ async def claim_quest_reward(telegram_id: int, progress_id: int) -> QuestRewardR
             """,
             (new_bp_points, new_pass_level, profile.id),
         )
+        if bp_reward > 0:
+            from app.services.release_2026_09 import grant_fireside_pass_points
+            grant_fireside_pass_points(connection, profile.id, bp_reward)
 
         if coins_reward > 0:
             connection.execute(

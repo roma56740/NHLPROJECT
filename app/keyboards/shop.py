@@ -11,8 +11,8 @@ SHOP_HISTORY_PER_PAGE = 5
 def build_shop_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 Паки в магазине", callback_data="shop:packs:1")],
-            [InlineKeyboardButton(text="💵 Купить Рубли", callback_data="shop:buy_rubles")],
+            [InlineKeyboardButton(text="📦 Боксы", callback_data="shop:packs:1")],
+            [InlineKeyboardButton(text="⚡ Купить Energy", callback_data="shop:buy_rubles")],
             [InlineKeyboardButton(text="📜 История покупок", callback_data="shop:history:1")],
             [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="menu:main")],
         ]
@@ -75,7 +75,7 @@ def build_shop_confirm_keyboard(pack_id: int, page: int) -> InlineKeyboardMarkup
 def build_shop_purchase_result_keyboard(pack_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 Открыть мои паки", callback_data="packs:inventory:1")],
+            [InlineKeyboardButton(text="📦 Мои боксы", callback_data="packs:inventory:1")],
             [InlineKeyboardButton(text="🛒 Вернуться в магазин", callback_data="shop:packs:1")],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main")],
         ]
@@ -97,7 +97,7 @@ def build_shop_history_keyboard(purchases: list[ShopPurchaseItem], page: int, pa
     if navigation:
         keyboard.append(navigation)
 
-    keyboard.append([InlineKeyboardButton(text="🎁 Паки в магазине", callback_data="shop:packs:1")])
+    keyboard.append([InlineKeyboardButton(text="📦 Боксы", callback_data="shop:packs:1")])
     keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="shop:main")])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

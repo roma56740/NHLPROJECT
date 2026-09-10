@@ -1023,3 +1023,7 @@ existing gameplay behavior beyond adding the guard itself.
 - Legacy `/app/data/render_cache` cleanup retained to recover occupied Railway Volume space.
 - R14 Leaders admin-only/card-owner controls retained.
 - Production DB/uploads predeploy guards retained; `SCHEMA_VERSION` stays at 3 because R15 has no DB schema migration.
+
+## R16 — X-Factors + Player Mastery (2026-09-06)
+
+Added inventory-bound X-Factors and a 1,000,000-point lifetime mastery track for the initial 10 hockey players. See `PATCH_NOTES_R16_XFACTORS_MASTERY.md` for the complete rules, reward line, migrations, and deploy notes.

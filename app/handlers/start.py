@@ -9,6 +9,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, User
 
 from app.handlers.menu import send_home_photo
+from app.keyboards.miniapp import build_miniapp_keyboard
+from app.services.miniapp_runtime import get_miniapp_url, miniapp_only_mode_enabled
+from app.utils.users import is_admin
 from app.services.users import register_or_update_player
 from app.services.creator_tournaments import (
     get_tournament_by_invite_token,
@@ -95,6 +98,22 @@ async def start_command(message: Message, state: FSMContext) -> None:
         return
 
     await state.clear()
+
+    # Ordinary players use only the Mini App. Legacy Telegram handlers remain
+    # registered and untouched so the release can be rolled back without
+    # rebuilding the old bot. Administrators keep their full bot/admin UI.
+    if not is_admin(message.from_user.id) and miniapp_only_mode_enabled():
+        await register_or_update_player(message.from_user)
+        await delete_start_message(message)
+        url = get_miniapp_url()
+        text = (
+            "<b>Nexcore</b>\n\nОткрой игру через Mini App."
+            if url
+            else "<b>Nexcore</b>\n\nMini App пока не получил публичный URL. Для покупки Energy или связи: @teyld"
+        )
+        await message.answer(text, reply_markup=build_miniapp_keyboard())
+        return
+
     payload = _start_payload(message)
     if payload:
         await delete_start_message(message)

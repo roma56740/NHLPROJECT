@@ -79,7 +79,6 @@ def build_admin_user_profile_keyboard(
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🃏 Выдать карточку", callback_data=f"admin_users:give_card:{user_id}:{page}")],
-            [InlineKeyboardButton(text="🎁 Выдать пак", callback_data=f"admin_users:give_pack:{user_id}:{page}")],
             [InlineKeyboardButton(text="💱 Выдать валюту", callback_data=f"admin_users:currency:{user_id}:{page}")],
             [InlineKeyboardButton(text="🏆 Изменить лигу", callback_data=f"admin_users:league:{user_id}:{page}")],
             [InlineKeyboardButton(text=premium_text, callback_data=f"admin_users:premium:{user_id}:{page}")],
@@ -96,7 +95,7 @@ def build_admin_user_currency_keyboard(user_id: int, page: int) -> InlineKeyboar
         inline_keyboard=[
             [InlineKeyboardButton(text="🪙 Coins", callback_data=f"admin_users:currency_code:{user_id}:coins:{page}")],
             [InlineKeyboardButton(text="⚡ Energy", callback_data=f"admin_users:currency_code:{user_id}:energy:{page}")],
-            [InlineKeyboardButton(text="🏅 Rank-point", callback_data=f"admin_users:currency_code:{user_id}:rank_point:{page}")],
+            [InlineKeyboardButton(text="🏅 Rank Coins", callback_data=f"admin_users:currency_code:{user_id}:rank_point:{page}")],
             [InlineKeyboardButton(text="⬅️ К игроку", callback_data=f"admin_users:view:{user_id}:{page}")],
         ]
     )

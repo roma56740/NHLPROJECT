@@ -97,11 +97,16 @@ def build_user_cards_list_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def build_user_card_profile_keyboard(user_card_id: int, page: int, is_locked: bool = False, in_lineup: bool = False) -> InlineKeyboardMarkup:
+def build_user_card_profile_keyboard(user_card_id: int, page: int, is_locked: bool = False, in_lineup: bool = False, has_mastery: bool = False, xfactor_count: int = 0) -> InlineKeyboardMarkup:
     keyboard: list[list[InlineKeyboardButton]] = []
 
     lock_text = "🔓 Разблокировать" if is_locked else "🔒 Заблокировать"
     keyboard.append([InlineKeyboardButton(text=lock_text, callback_data=f"user_cards:lock:{user_card_id}:{page}")])
+
+    if has_mastery:
+        keyboard.append([InlineKeyboardButton(text="🏆 Мастерство", callback_data=f"mastery:open:{user_card_id}:{page}")])
+
+    keyboard.append([InlineKeyboardButton(text=f"⚡ X-Factors · {xfactor_count}/3", callback_data=f"cardxf:view:{user_card_id}:{page}")])
 
     if not in_lineup and not is_locked:
         keyboard.append([InlineKeyboardButton(text="💰 Быстро продать", callback_data=f"user_cards:sell:{user_card_id}:{page}")])

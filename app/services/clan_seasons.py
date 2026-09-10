@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from app.database.db import get_connection
 from app.services.clan_wars import pay_clan_members
 from app.services.rewards import grant_pack
+from app.services.miniapp_runtime import miniapp_only_mode_enabled
 
 
 @dataclass(frozen=True)
@@ -151,7 +152,8 @@ async def reset_clan_season(reset_by_telegram_id: int | None = None) -> ClanSeas
             if reward.coins > 0:
                 pay_clan_members(connection, clan_id, "coins", reward.coins)
             if reward.rubles > 0:
-                pay_clan_members(connection, clan_id, "energy", reward.rubles)
+                if not miniapp_only_mode_enabled():
+                    pay_clan_members(connection, clan_id, "energy", reward.rubles)
             if reward.pack_id is not None:
                 _grant_pack_to_clan_members(connection, clan_id, int(reward.pack_id), 1)
             rewarded += 1

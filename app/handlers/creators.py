@@ -197,13 +197,12 @@ async def creator_bank_add(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer("Только для креаторов", show_alert=True)
         return
     currencies = await list_currencies_for_bank(user_id)
-    packs = await list_packs_for_bank(user_id)
     text = (
         "<b>➕ Пополнение банка выдачи</b>\n\n"
-        "Можно добавить валюту, пак или карту. После добавления вывести награду обратно нельзя. "
+        "Можно добавить валюту или карту. После добавления вывести награду обратно нельзя. "
         "В статистику разыгранных монет это попадёт только после выдачи игроку."
     )
-    await edit_or_send(callback, text, reply_markup=build_creator_bank_add_keyboard(bool(currencies), bool(packs)))
+    await edit_or_send(callback, text, reply_markup=build_creator_bank_add_keyboard(bool(currencies), False))
     await callback.answer()
 
 
