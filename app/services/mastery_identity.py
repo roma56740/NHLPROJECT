@@ -42,4 +42,17 @@ _MASTERY_ALIASES: dict[str, str] = {
 
 def resolve_mastery_player_key(value: str | None) -> str:
     normalized = canonical_player_key(value)
+    # Imports/events historically appended harmless edition markers to player_key.
+    # Mastery is lifetime progression for the hockey player, not for a card edition.
+    for prefix in ("heroes_", "hero_", "mastery_"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):]
+    changed = True
+    while changed:
+        changed = False
+        for suffix in ("_base", "_heroes", "_hero", "_event", "_card", "_2026"):
+            if normalized.endswith(suffix):
+                normalized = normalized[:-len(suffix)]
+                changed = True
+    normalized = re.sub(r"_(?:9[0-9]|10[0-9]|110)$", "", normalized)
     return _MASTERY_ALIASES.get(normalized, normalized)

@@ -361,6 +361,22 @@ async def submit_application(user_id: int, channel: str, subscribers: int, descr
     return True, "Заявка отправлена. Админы рассмотрят её и вручную назначат уровень после проверки."
 
 
+async def get_user_application(user_id: int) -> CreatorApplication | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT a.id, a.user_id, u.nickname, u.telegram_id, a.channel, a.subscribers, a.description, a.status
+            FROM creator_applications a
+            JOIN users u ON u.id = a.user_id
+            WHERE a.user_id = ?
+            ORDER BY a.id DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+    return CreatorApplication(**dict(row)) if row else None
+
+
 async def get_pending_applications() -> list[CreatorApplication]:
     with get_connection() as connection:
         rows = connection.execute(
@@ -874,6 +890,17 @@ async def distribute_bank_item(creator_user_id: int, target_telegram_id: int, it
         connection.commit()
 
     return True, f"Выдано игроку {target['nickname']}: {reward_desc}. В зачёт креатора добавлено {format_int(value)} монет.", value
+
+
+async def distribute_bank_item_to_player_id(creator_user_id: int, target_user_id: int, item_id: int, amount: int = 1) -> tuple[bool, str, int]:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT telegram_id FROM users WHERE id = ? AND is_banned = 0",
+            (target_user_id,),
+        ).fetchone()
+    if row is None:
+        return False, "Игрок с таким Player ID не найден.", 0
+    return await distribute_bank_item(creator_user_id, int(row["telegram_id"]), item_id, amount)
 
 
 # Совместимость со старой выдачей coins/паков.

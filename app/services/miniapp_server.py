@@ -19,6 +19,12 @@ from app.services.miniapp_runtime import MINIAPP_ROOT, ROOT, miniapp_port
 from app.services import community
 from app.services import creators
 from app.services import daily_login
+from app.services import free_card
+from app.services import gift_week
+from app.services import promo
+from app.services import quick_sell
+from app.services.black_market_common import BlackMarketError
+from app.services import black_market_store
 from app.services import mastery as mastery_service
 from app.services import quests
 from app.services import release_2026_09 as release
@@ -59,6 +65,13 @@ _ACTION_COOLDOWNS: dict[str, float] = {
     "trade_cancel": 1.0,
     "trade_create": 2.0,
     "daily_claim": 1.0,
+    "gift_week_claim": 1.0,
+    "free_card_claim": 1.0,
+    "promo_redeem": 1.0,
+    "card_lock": 0.8,
+    "black_market_buy": 1.5,
+    "creator_apply": 2.0,
+    "creator_distribute": 1.0,
     "quest_claim": 1.0,
     "pass_purchase": 1.5,
     "pass_claim": 1.0,
@@ -423,6 +436,7 @@ def _serialize_lineup(overview) -> dict[str, object]:
         if overview.average_overall is not None
         else None,
         "chemistry_bonus": int(overview.chemistry_bonus),
+        "chemistry_bonuses": _jsonify(getattr(overview, "chemistry_bonuses", []) or []),
         "final_overall": int(overview.final_overall)
         if overview.final_overall is not None
         else None,
@@ -641,6 +655,9 @@ def _load_state_bundle(user_id: int, telegram_id: int, is_creator: bool) -> dict
     other buttons/HTTP requests responsive instead of letting one /api/state call
     monopolize the event loop.
     """
+    # Gift Week starter grant must happen before the card snapshot so Rudolph is
+    # visible in the same /api/state response that grants it.
+    gift_week_status = gift_week.get_status(telegram_id)
     all_cards = _load_all_cards(user_id)
     card_ids = [int(card["id"]) for card in all_cards]
     xfactor_items, _xf_page, _xf_pages, xf_total = xfactors.get_user_xfactor_inventory(
@@ -684,7 +701,7 @@ def _load_state_bundle(user_id: int, telegram_id: int, is_creator: bool) -> dict
         "all_cards": all_cards, "xfactor_items": xfactor_items, "xf_total": xf_total,
         "installed": installed, "mastery": mastery, "pass_status": pass_status,
         "boxes": boxes, "heroes_state": heroes_state, "cursed": cursed,
-        "achievements": achievements, "fireside_recipes": fireside_recipes,
+        "achievements": achievements, "gift_week": gift_week_status, "fireside_recipes": fireside_recipes,
         "xfactor_catalog": xfactor_catalog, **async_data,
     }
 
@@ -800,6 +817,7 @@ async def api_state(request: web.Request) -> web.Response:
             "heroes": _jsonify(data["heroes_state"]),
             "cursed_mirror": _jsonify(data["cursed"]),
             "achievements": _jsonify(data["achievements"]),
+            "gift_week": _jsonify(data["gift_week"]),
             "fireside_craft": _jsonify(data["fireside_recipes"]),
             "daily": _jsonify(data["daily"]),
             "quests": {
@@ -1140,6 +1158,20 @@ async def api_hero_claim(request: web.Request) -> web.Response:
     )
 
 
+async def api_gift_week_claim(request: web.Request) -> web.Response:
+    telegram_id, profile, error = await _auth_player(request)
+    if error is not None:
+        return error
+    guard = _guard_response(profile, "gift_week_claim")
+    if guard is not None:
+        return guard
+    ok, message, status = await asyncio.to_thread(gift_week.claim, int(telegram_id))
+    return web.json_response(
+        {"ok": bool(ok), "message": str(message), "gift_week": _jsonify(status)},
+        status=200 if ok else 409,
+    )
+
+
 async def api_achievement_claim(request: web.Request) -> web.Response:
     telegram_id, profile, error = await _auth_player(request)
     if error is not None:
@@ -1374,12 +1406,14 @@ async def api_trade_options(request: web.Request) -> web.Response:
     targets = await _threaded_async(
         community.get_direct_trade_players_page, user_id=profile.id, page=1, per_page=100
     )
+    currencies = await asyncio.to_thread(_load_trade_currencies)
     return web.json_response(
         {
             "ok": True,
             "offered_cards": _jsonify(own_cards),
             "wanted_cards": _jsonify(wanted_cards),
             "targets": _jsonify(targets),
+            "currencies": _jsonify(currencies),
         }
     )
 
@@ -1411,6 +1445,10 @@ async def api_trade_create(request: web.Request) -> web.Response:
     if wanted_amount is None:
         return web.json_response({"ok": False, "error": "invalid_currency_amount"}, status=400)
     currency_code = str(body.get("wanted_currency_code") or "").strip() or None
+    offered_currency_code = str(body.get("offered_currency_code") or "").strip() or None
+    offered_currency_amount = _nonnegative_int(body.get("offered_currency_amount"), maximum=2_147_483_647)
+    if offered_currency_amount is None:
+        return web.json_response({"ok": False, "error": "invalid_offered_currency_amount"}, status=400)
     result = await _threaded_async(community.create_trade_offer,
         creator_user_id=profile.id,
         offered_user_card_ids=offered_cards,
@@ -1418,6 +1456,8 @@ async def api_trade_create(request: web.Request) -> web.Response:
         wanted_card_ids=wanted_cards,
         wanted_currency_code=currency_code,
         wanted_currency_amount=wanted_amount,
+        offered_currency_code=offered_currency_code,
+        offered_currency_amount=offered_currency_amount,
         target_user_id=target_user_id,
         offered_user_cosmetic_ids=offered_cosmetics,
         wanted_cosmetic_item_ids=wanted_cosmetics,
@@ -1465,6 +1505,144 @@ async def api_trade_cancel(request: web.Request) -> web.Response:
     return _action_response(await _threaded_async(community.cancel_trade_offer, offer_id, user_id=profile.id))
 
 
+async def api_card_lock(request: web.Request) -> web.Response:
+    _telegram_id, profile, error = await _auth_player(request)
+    if error is not None:
+        return error
+    guard = _guard_response(profile, "card_lock")
+    if guard is not None:
+        return guard
+    user_card_id = _positive_int(request.match_info.get("user_card_id"))
+    if user_card_id is None:
+        return web.json_response({"ok": False, "error": "invalid_card_id"}, status=400)
+    ok, message, locked = await _threaded_async(quick_sell.toggle_card_lock, int(profile.id), user_card_id)
+    return web.json_response({"ok": bool(ok), "message": str(message), "locked": bool(locked)}, status=200 if ok else 400)
+
+
+async def api_promo_redeem(request: web.Request) -> web.Response:
+    _telegram_id, profile, error = await _auth_player(request)
+    if error is not None:
+        return error
+    guard = _guard_response(profile, "promo_redeem")
+    if guard is not None:
+        return guard
+    body = await _json_body(request)
+    code = str(body.get("code") or "").strip()
+    if not code or len(code) > 64:
+        return web.json_response({"ok": False, "error": "invalid_promo", "message": "Введи промокод."}, status=400)
+    reward, message = await _threaded_async(promo.redeem_promo, int(profile.id), code)
+    if reward is None:
+        return web.json_response({"ok": False, "error": "promo_rejected", "message": str(message)}, status=400)
+    return web.json_response({"ok": True, "message": "Промокод активирован.", "reward": _jsonify(reward)})
+
+
+async def api_free_card_status(request: web.Request) -> web.Response:
+    _telegram_id, profile, error = await _auth_player(request)
+    if error is not None:
+        return error
+    status = await _threaded_async(free_card.get_free_card_status, int(profile.id))
+    return web.json_response({"ok": True, "free_card": _jsonify(status)})
+
+
+async def api_free_card_claim(request: web.Request) -> web.Response:
+    _telegram_id, profile, error = await _auth_player(request)
+    if error is not None:
+        return error
+    guard = _guard_response(profile, "free_card_claim")
+    if guard is not None:
+        return guard
+    reward, status = await _threaded_async(free_card.claim_free_card, int(profile.id))
+    if reward is None:
+        return web.json_response({"ok": False, "error": "free_card_unavailable", "message": "Бесплатная карта пока недоступна.", "free_card": _jsonify(status)}, status=400)
+    return web.json_response({"ok": True, "message": f"Получена карта {reward.name} {reward.overall} OVR.", "reward": _jsonify(reward), "free_card": _jsonify(status)})
+
+
+async def api_black_market(request: web.Request) -> web.Response:
+    _telegram_id, profile, error = await _auth_player(request)
+    if error is not None:
+        return error
+    try:
+        rotation = await _threaded_async(black_market_store.list_storefront, int(profile.id))
+    except BlackMarketError as exc:
+        return web.json_response({"ok": False, "error": exc.code, "message": exc.message}, status=400)
+    return web.json_response({"ok": True, "rotation": _jsonify(rotation)})
+
+
+async def api_black_market_buy(request: web.Request) -> web.Response:
+    _telegram_id, profile, error = await _auth_player(request)
+    if error is not None:
+        return error
+    guard = _guard_response(profile, "black_market_buy")
+    if guard is not None:
+        return guard
+    body = await _json_body(request)
+    item_id = _positive_int(body.get("rotation_item_id"))
+    if item_id is None:
+        return web.json_response({"ok": False, "error": "invalid_item_id"}, status=400)
+    request_id = str(body.get("request_id") or secrets.token_urlsafe(16)).strip()[:96]
+    try:
+        result = await _threaded_async(black_market_store.purchase, int(profile.id), item_id, request_id)
+    except BlackMarketError as exc:
+        return web.json_response({"ok": False, "error": exc.code, "message": exc.message}, status=400)
+    return web.json_response({"ok": True, "message": f"Куплено: {result.name}", "purchase": _jsonify(result)})
+
+
+async def api_creator_status(request: web.Request) -> web.Response:
+    _telegram_id, profile, error = await _auth_player(request)
+    if error is not None:
+        return error
+    panel = await _threaded_async(creators.get_panel, int(profile.id))
+    application = await _threaded_async(creators.get_user_application, int(profile.id))
+    history = await _threaded_async(creators.get_distribution_history, int(profile.id), 20) if panel.is_creator else []
+    return web.json_response({"ok": True, "creator": _jsonify(panel), "application": _jsonify(application), "history": _jsonify(history)})
+
+
+async def api_creator_apply(request: web.Request) -> web.Response:
+    _telegram_id, profile, error = await _auth_player(request)
+    if error is not None:
+        return error
+    guard = _guard_response(profile, "creator_apply")
+    if guard is not None:
+        return guard
+    body = await _json_body(request)
+    channel = str(body.get("channel") or "").strip()
+    description = str(body.get("description") or "").strip()
+    subscribers = _nonnegative_int(body.get("subscribers"), maximum=100_000_000)
+    if subscribers is None:
+        return web.json_response({"ok": False, "error": "invalid_subscribers", "message": "Укажи корректное число подписчиков."}, status=400)
+    ok, message = await _threaded_async(creators.submit_application, int(profile.id), channel, subscribers, description)
+    application = await _threaded_async(creators.get_user_application, int(profile.id))
+    return web.json_response({"ok": bool(ok), "message": str(message), "application": _jsonify(application)}, status=200 if ok else 400)
+
+
+async def api_creator_distribute(request: web.Request) -> web.Response:
+    _telegram_id, profile, error = await _auth_player(request)
+    if error is not None:
+        return error
+    guard = _guard_response(profile, "creator_distribute")
+    if guard is not None:
+        return guard
+    body = await _json_body(request)
+    target_user_id = _positive_int(body.get("target_user_id"))
+    item_id = _positive_int(body.get("item_id"))
+    amount = _positive_int(body.get("amount")) or 1
+    if target_user_id is None or item_id is None:
+        return web.json_response({"ok": False, "error": "invalid_creator_distribution", "message": "Укажи Player ID и награду."}, status=400)
+    ok, message, value = await _threaded_async(
+        creators.distribute_bank_item_to_player_id,
+        int(profile.id), target_user_id, item_id, amount,
+    )
+    return web.json_response({"ok": bool(ok), "message": str(message), "value_coins": int(value)}, status=200 if ok else 400)
+
+
+def _load_trade_currencies() -> list[dict[str, object]]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT code, name, icon FROM currencies WHERE active = 1 ORDER BY CASE code WHEN 'coins' THEN 0 WHEN 'energy' THEN 1 ELSE 2 END, name"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 async def healthz(_request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "service": "nexcore"})
 
@@ -1499,7 +1677,7 @@ async def miniapp_file(request: web.Request) -> web.StreamResponse:
     if candidate is None:
         raise web.HTTPNotFound()
     response = web.FileResponse(candidate)
-    if candidate.name in {"index.html", "app.js", "style.css", "media.css", "locale.js"}:
+    if candidate.name in {"index.html", "app.js", "style.css", "media.css", "locale.js", "legal.html"}:
         response.headers["Cache-Control"] = "no-cache"
     else:
         response.headers["Cache-Control"] = "public, max-age=86400"
@@ -1518,6 +1696,15 @@ async def start_miniapp_server() -> web.AppRunner:
     app.router.add_get("/api/state", api_state)
     app.router.add_get("/api/cards", api_cards)
     app.router.add_get("/api/cards/{user_card_id}", api_card_details)
+    app.router.add_post("/api/cards/{user_card_id}/lock", api_card_lock)
+    app.router.add_post("/api/promo/redeem", api_promo_redeem)
+    app.router.add_get("/api/free-card", api_free_card_status)
+    app.router.add_post("/api/free-card/claim", api_free_card_claim)
+    app.router.add_get("/api/black-market", api_black_market)
+    app.router.add_post("/api/black-market/buy", api_black_market_buy)
+    app.router.add_get("/api/creator/status", api_creator_status)
+    app.router.add_post("/api/creator/apply", api_creator_apply)
+    app.router.add_post("/api/creator/distribute", api_creator_distribute)
 
     app.router.add_post("/api/lineup/set", api_lineup_set)
     app.router.add_post("/api/lineup/remove", api_lineup_remove)
@@ -1527,6 +1714,7 @@ async def start_miniapp_server() -> web.AppRunner:
     app.router.add_post("/api/xfactors/remove", api_xfactor_remove)
     app.router.add_post("/api/mastery/claim", api_mastery_claim)
     app.router.add_post("/api/daily/claim", api_daily_claim)
+    app.router.add_post("/api/gift-week/claim", api_gift_week_claim)
     app.router.add_post("/api/quests/claim", api_quest_claim)
     app.router.add_post("/api/fireside/pass/purchase", api_purchase_fireside_pass)
     app.router.add_post("/api/fireside/pass/claim", api_claim_fireside_pass)

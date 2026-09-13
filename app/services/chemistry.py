@@ -26,6 +26,7 @@ class ChemistryCard:
     team: str
     collection_name: str
     collection_code: str | None = None
+    card_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -121,10 +122,36 @@ async def calculate_chemistry(cards: Sequence[ChemistryCard]) -> ChemistryResult
     team_counts: dict[str, int] = {}
     collection_counts: dict[str, int] = {}
 
+    # R24 Gift Week supports card-specific club affinities. A wildcard card keeps
+    # its printed team, but may count toward additional club chemistry values.
+    affinity_by_card: dict[int, list[str]] = {}
+    card_ids = sorted({int(card.card_id) for card in cards if card.card_id is not None})
+    if card_ids:
+        placeholders = ",".join("?" for _ in card_ids)
+        with get_connection() as connection:
+            try:
+                rows = connection.execute(
+                    f"SELECT card_id,team_value FROM card_chemistry_affinities WHERE card_id IN ({placeholders})",
+                    card_ids,
+                ).fetchall()
+            except Exception:
+                rows = []
+        for row in rows:
+            affinity_by_card.setdefault(int(row["card_id"]), []).append(str(row["team_value"]))
+
     for card in cards:
-        country_counts[normalize_value(card.country)] = country_counts.get(normalize_value(card.country), 0) + 1
-        team_counts[normalize_value(card.team)] = team_counts.get(normalize_value(card.team), 0) + 1
-        collection_counts[normalize_value(card.collection_name)] = collection_counts.get(normalize_value(card.collection_name), 0) + 1
+        country_key = normalize_value(card.country)
+        team_key = normalize_value(card.team)
+        collection_key = normalize_value(card.collection_name)
+        country_counts[country_key] = country_counts.get(country_key, 0) + 1
+        team_counts[team_key] = team_counts.get(team_key, 0) + 1
+        collection_counts[collection_key] = collection_counts.get(collection_key, 0) + 1
+
+        if card.card_id is not None:
+            for affinity in affinity_by_card.get(int(card.card_id), []):
+                affinity_key = normalize_value(affinity)
+                if affinity_key and affinity_key != team_key:
+                    team_counts[affinity_key] = team_counts.get(affinity_key, 0) + 1
 
         if card.collection_code:
             collection_counts[normalize_value(card.collection_code)] = collection_counts.get(normalize_value(card.collection_code), 0) + 1
@@ -156,8 +183,20 @@ async def calculate_chemistry(cards: Sequence[ChemistryCard]) -> ChemistryResult
                 )
             )
 
-    total_bonus = sum(bonus.bonus_ovr for bonus in bonuses)
-    return ChemistryResult(bonuses=bonuses, total_bonus=total_bonus)
+    # R24 chemistry is intentionally capped at +3 OVR for a six-card lineup.
+    # Keep the strongest/deepest rules first so 2/4/6 of one club naturally
+    # resolves to +3, while mixed club pairs cannot exceed the same ceiling.
+    bonuses.sort(key=lambda bonus: (bonus.bonus_ovr, bonus.required_cards, bonus.matched_cards), reverse=True)
+    selected: list[ChemistryBonus] = []
+    total_bonus = 0
+    for bonus in bonuses:
+        if total_bonus >= 3:
+            break
+        available = 3 - total_bonus
+        if bonus.bonus_ovr <= available:
+            selected.append(bonus)
+            total_bonus += bonus.bonus_ovr
+    return ChemistryResult(bonuses=selected, total_bonus=total_bonus)
 
 
 async def get_chemistry_rules_page(page: int = 1, per_page: int = 5, query: str | None = None) -> ChemistryRulesPage:

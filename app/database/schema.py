@@ -187,7 +187,7 @@ DEFAULT_GAME_SETTINGS = [
     },
     {
         "key": "free_card_cooldown_hours",
-        "value": "6",
+        "value": "24",
         "title": "Ожидание бесплатной карточки",
         "description": "Через сколько часов игрок сможет забрать новую бесплатную карточку.",
     },
@@ -1101,6 +1101,8 @@ CREATE TABLE IF NOT EXISTS trade_offers (
     wanted_type TEXT NOT NULL CHECK(wanted_type IN ('cards', 'currency')),
     wanted_currency_code TEXT,
     wanted_currency_amount INTEGER NOT NULL DEFAULT 0,
+    offered_currency_code TEXT,
+    offered_currency_amount INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL CHECK(status IN ('open', 'accepted', 'cancelled')) DEFAULT 'open',
     accepted_by_user_id INTEGER,
     accepted_at TEXT,
@@ -1109,7 +1111,8 @@ CREATE TABLE IF NOT EXISTS trade_offers (
     FOREIGN KEY (creator_user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (accepted_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (wanted_currency_code) REFERENCES currencies(code) ON DELETE SET NULL
+    FOREIGN KEY (wanted_currency_code) REFERENCES currencies(code) ON DELETE SET NULL,
+    FOREIGN KEY (offered_currency_code) REFERENCES currencies(code) ON DELETE SET NULL
 );
 """
 

@@ -195,9 +195,16 @@ def run_migrations(connection: sqlite3.Connection) -> None:
             "Unsafe preview migration 0012_nexcore_release_2026_09 is present. "
             "Restore the R15 predeploy backup before starting this safe release."
         )
-    from app.services.release_2026_09 import migrate_release_schema, migrate_r21_balance_and_speed
+    from app.services.release_2026_09 import (
+        migrate_release_schema,
+        migrate_r21_balance_and_speed,
+        migrate_r24_gift_week_ranked_final,
+    )
     run_once(connection, "0012_nexcore_release_2026_09_safe", migrate_release_schema)
     run_once(connection, "0013_nhl_cards_r21_balance_speed", migrate_r21_balance_and_speed)
+    run_once(connection, "0014_nhl_cards_r24_gift_week_ranked_final", migrate_r24_gift_week_ranked_final)
+    ensure_column(connection=connection, table_name="trade_offers", column_name="offered_currency_code", column_sql="offered_currency_code TEXT")
+    ensure_column(connection=connection, table_name="trade_offers", column_name="offered_currency_amount", column_sql="offered_currency_amount INTEGER NOT NULL DEFAULT 0")
 
     ensure_column(connection=connection, table_name="users", column_name="creator_subscribers", column_sql="creator_subscribers INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection=connection, table_name="users", column_name="creator_chat_link_sent", column_sql="creator_chat_link_sent INTEGER NOT NULL DEFAULT 0")

@@ -183,6 +183,7 @@ async def get_lineup_overview(user_id: int) -> LineupOverview:
             team=card.team,
             collection_name=card.collection_name,
             collection_code=card.collection_code,
+            card_id=card.card_id,
         )
         for card in cards
     ])

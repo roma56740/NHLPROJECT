@@ -83,6 +83,29 @@ PIRATE_PLAYERS: tuple[dict[str, object], ...] = (
     {"name":"Henrik Lundqvist","key":"henrik lundqvist","position":"G","ovr":101,"team":"New York Rangers","country":"Sweden","image":"assets/release/pirates/henrik_lundqvist_101.png"},
 )
 
+R24_CHEMISTRY_TEAMS: tuple[str, ...] = (
+    "San Jose Sharks",
+    "New York Rangers",
+    "Montreal Canadiens",
+    "Chicago Blackhawks",
+)
+
+R24_RANKED_FINAL_CARDS: tuple[dict[str, object], ...] = (
+    {"key":"brindamour","name":"Rod Brind'Amour","player_key":"rod brind'amour","position":"F","ovr":97,"team":"Carolina Hurricanes","country":"Canada","image":"assets/release/ranked_final/rod_brindamour_97.png"},
+    {"key":"iafrate","name":"Al Iafrate","player_key":"al iafrate","position":"D","ovr":96,"team":"Washington Capitals","country":"USA","image":"assets/release/ranked_final/al_iafrate_96.png"},
+    {"key":"weber","name":"Shea Weber","player_key":"shea weber","position":"D","ovr":95,"team":"Nashville Predators","country":"Canada","image":"assets/release/ranked_final/shea_weber_95.png"},
+)
+
+R24_GIFT_STARTER: dict[str, object] = {
+    "name":"Daxon Rudolph",
+    "player_key":"daxon rudolph",
+    "position":"D",
+    "ovr":97,
+    "team":"Prince Albert Raiders",
+    "country":"Canada",
+    "image":"assets/release/gift_week/daxon_rudolph_97.png",
+}
+
 # level, free kind, free code/value, free amount, premium kind, premium code/value, premium amount
 FIRESIDE_PASS_REWARDS: tuple[tuple, ...] = (
     (1,"currency","coins",25000,"xfactor","firescore",1),
@@ -218,6 +241,242 @@ def migrate_r21_balance_and_speed(connection: sqlite3.Connection) -> None:
             "UPDATE boxes SET price_amount=?, cards_count=?, resources_count=?, updated_at=CURRENT_TIMESTAMP WHERE code=?",
             (int(cfg["price"]), int(cfg["cards"]), int(cfg["resources"]), code),
         )
+
+
+def migrate_r24_gift_week_ranked_final(connection: sqlite3.Connection) -> None:
+    """R24 content migration.
+
+    - starts a seven-day Gift Week and grants Daxon Rudolph 97 to all existing players;
+    - replaces live chemistry rules with the four requested club synergies;
+    - closes the remaining active Ranked season and awards fixed TOP-3 cards once.
+
+    The migration is additive/idempotent. Player cards are protected from duplicate
+    grants by dedicated ledger tables rather than by checking current ownership, so a
+    legitimately traded-away reward is never reissued.
+    """
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS gift_week_events(
+            code TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            starts_at TEXT NOT NULL,
+            ends_at TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS gift_week_users(
+            user_id INTEGER NOT NULL,
+            event_code TEXT NOT NULL,
+            starter_granted INTEGER NOT NULL DEFAULT 0,
+            claims_count INTEGER NOT NULL DEFAULT 0,
+            last_claim_date TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(user_id,event_code),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY(event_code) REFERENCES gift_week_events(code) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS gift_week_claims(
+            user_id INTEGER NOT NULL,
+            event_code TEXT NOT NULL,
+            day INTEGER NOT NULL CHECK(day BETWEEN 1 AND 7),
+            rewards_json TEXT NOT NULL DEFAULT '[]',
+            claimed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(user_id,event_code,day),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY(event_code) REFERENCES gift_week_events(code) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS card_chemistry_affinities(
+            card_id INTEGER NOT NULL,
+            team_value TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(card_id,team_value),
+            FOREIGN KEY(card_id) REFERENCES cards(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS ranked_final_reward_grants(
+            season_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            place INTEGER NOT NULL CHECK(place BETWEEN 1 AND 3),
+            card_id INTEGER NOT NULL,
+            granted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(season_id,user_id,card_id),
+            FOREIGN KEY(season_id) REFERENCES ranked_seasons(id) ON DELETE CASCADE,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY(card_id) REFERENCES cards(id) ON DELETE RESTRICT
+        );
+        """
+    )
+
+    # Additional Fireside Pass quests. They pay BP only, so they accelerate pass
+    # progression without injecting more liquid Coins into the economy.
+    r24_pass_quests = (
+        ("r24_daily_play_5", "Сыграть 5 матчей", "Проведи 5 матчей за день.", "daily", "matches_played", 5, 1, 0, 5),
+        ("r24_daily_win_3", "Выиграть 3 матча", "Одержи 3 победы за день.", "daily", "matches_won", 3, 1, 0, 6),
+        ("r24_daily_goals_10", "Забить 10 голов", "Забей 10 голов за день.", "daily", "goals_scored", 10, 1, 0, 7),
+        ("r24_season_play_100", "Сыграть 100 матчей", "Сыграй 100 матчей в сезоне Fireside.", "seasonal", "matches_played", 100, 5, 0, 5),
+        ("r24_season_win_50", "Выиграть 50 матчей", "Одержи 50 побед в сезоне Fireside.", "seasonal", "matches_won", 50, 5, 0, 6),
+        ("r24_season_goals_300", "Забить 300 голов", "Забей 300 голов в сезоне Fireside.", "seasonal", "goals_scored", 300, 5, 0, 7),
+    )
+    for quest in r24_pass_quests:
+        connection.execute(
+            """INSERT INTO quests(code,title,description,period_type,target_type,target_value,bp_reward,coins_reward,active,sort_order)
+               VALUES(?,?,?,?,?,?,?,?,1,?)
+               ON CONFLICT(code) DO UPDATE SET title=excluded.title,description=excluded.description,period_type=excluded.period_type,
+                   target_type=excluded.target_type,target_value=excluded.target_value,bp_reward=excluded.bp_reward,
+                   coins_reward=excluded.coins_reward,active=1,sort_order=excluded.sort_order,updated_at=CURRENT_TIMESTAMP""",
+            quest,
+        )
+
+    # "Daily card" in R24 means once per 24 hours. Preserve an admin override,
+    # but migrate the untouched legacy six-hour default to the new daily cadence.
+    connection.execute(
+        "UPDATE game_settings SET value='24',updated_at=CURRENT_TIMESTAMP WHERE key='free_card_cooldown_hours' AND value='6'"
+    )
+
+    # Gift Week is global: it begins on the first R24 production boot and runs for
+    # exactly seven days. Existing players receive Rudolph immediately at migration.
+    connection.execute(
+        """INSERT OR IGNORE INTO gift_week_events(code,title,starts_at,ends_at)
+           VALUES('gift-week-r24','Неделя подарков',CURRENT_TIMESTAMP,datetime('now','+7 days'))"""
+    )
+    gift_collection = _seed_collection(
+        connection, "gift-week-2026", "Gift Week", "Seven-day Gift Week 2026", 1
+    )
+    starter_id = _seed_card(
+        connection,
+        collection_id=gift_collection,
+        name=str(R24_GIFT_STARTER["name"]),
+        player_key=str(R24_GIFT_STARTER["player_key"]),
+        position=str(R24_GIFT_STARTER["position"]),
+        overall=int(R24_GIFT_STARTER["ovr"]),
+        team=str(R24_GIFT_STARTER["team"]),
+        country=str(R24_GIFT_STARTER["country"]),
+        image_path=str(R24_GIFT_STARTER["image"]),
+    )
+    # Rudolph is a Gift Week chemistry wildcard for the four requested clubs.
+    # It keeps Prince Albert Raiders as the printed team on the card, while these
+    # affinity rows let it count toward any of the four NHL club synergies.
+    connection.execute("DELETE FROM card_chemistry_affinities WHERE card_id=?", (starter_id,))
+    for team in R24_CHEMISTRY_TEAMS:
+        connection.execute(
+            "INSERT OR IGNORE INTO card_chemistry_affinities(card_id,team_value) VALUES(?,?)",
+            (starter_id, team),
+        )
+
+    user_rows = connection.execute("SELECT id FROM users ORDER BY id").fetchall()
+    for user_row in user_rows:
+        user_id = int(user_row[0])
+        connection.execute(
+            """INSERT INTO gift_week_users(user_id,event_code,starter_granted,claims_count)
+               VALUES(?,'gift-week-r24',0,0)
+               ON CONFLICT(user_id,event_code) DO NOTHING""",
+            (user_id,),
+        )
+        starter_state = connection.execute(
+            "SELECT starter_granted FROM gift_week_users WHERE user_id=? AND event_code='gift-week-r24'",
+            (user_id,),
+        ).fetchone()
+        if starter_state is not None and not int(starter_state[0] or 0):
+            connection.execute(
+                "INSERT INTO user_cards(user_id,card_id,obtained_from,is_in_lineup,trade_locked) VALUES(?,?,?,0,0)",
+                (user_id, starter_id, "gift-week-r24-starter"),
+            )
+            connection.execute(
+                "UPDATE gift_week_users SET starter_granted=1,updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND event_code='gift-week-r24'",
+                (user_id,),
+            )
+
+    # New chemistry: only the four requested clubs are active. Every pair gives +1;
+    # four matching cards stack to +2 total, six matching cards to +3 total. With a
+    # six-card lineup the maximum chemistry bonus remains +3 OVR.
+    connection.execute("UPDATE chemistry_rules SET active=0,updated_at=CURRENT_TIMESTAMP WHERE active=1")
+    for team in R24_CHEMISTRY_TEAMS:
+        connection.execute(
+            "DELETE FROM chemistry_rules WHERE rule_type='team' AND lower(value)=lower(?)",
+            (team,),
+        )
+        for required in (2, 4, 6):
+            connection.execute(
+                """INSERT INTO chemistry_rules(rule_type,value,required_cards,bonus_ovr,active)
+                   VALUES('team',?,?,1,1)""",
+                (team, required),
+            )
+
+    # Seed the three fixed final Ranked cards from the user-supplied artworks.
+    ranked_collection = _seed_collection(
+        connection, "ranked-final-2026", "Ranked Final", "Final TOP-3 Ranked rewards", 1
+    )
+    ranked_card_ids: dict[str, int] = {}
+    for card in R24_RANKED_FINAL_CARDS:
+        ranked_card_ids[str(card["key"])] = _seed_card(
+            connection,
+            collection_id=ranked_collection,
+            name=str(card["name"]),
+            player_key=str(card["player_key"]),
+            position=str(card["position"]),
+            overall=int(card["ovr"]),
+            team=str(card["team"]),
+            country=str(card["country"]),
+            image_path=str(card["image"]),
+        )
+
+    # Finish the current Ranked season. If it was manually ended between builds,
+    # reward the latest ended season instead, but never grant a card twice.
+    season = connection.execute(
+        "SELECT id,season_number,status FROM ranked_seasons WHERE status='active' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if season is None:
+        season = connection.execute(
+            "SELECT id,season_number,status FROM ranked_seasons WHERE status='ended' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    if season is not None:
+        season_id = int(season["id"])
+        top_rows = connection.execute(
+            """
+            SELECT r.user_id,u.nickname,r.rank_points,r.wins,r.losses,r.matches_played
+            FROM ranked_player_stats r
+            JOIN users u ON u.id=r.user_id
+            WHERE r.season_id=? AND r.matches_played>0
+            ORDER BY r.rank_points DESC, r.wins DESC, r.losses ASC, r.user_id ASC
+            LIMIT 25
+            """,
+            (season_id,),
+        ).fetchall()
+        top_json = json.dumps(
+            [
+                {
+                    "place": index + 1,
+                    "user_id": int(row["user_id"]),
+                    "nickname": str(row["nickname"]),
+                    "rank_points": int(row["rank_points"]),
+                }
+                for index, row in enumerate(top_rows)
+            ],
+            ensure_ascii=False,
+        )
+        connection.execute(
+            """UPDATE ranked_seasons
+               SET status='ended',ends_at=CURRENT_TIMESTAMP,top_json=?,updated_at=CURRENT_TIMESTAMP
+               WHERE id=?""",
+            (top_json, season_id),
+        )
+        fixed_by_place = {
+            1: (ranked_card_ids["brindamour"], ranked_card_ids["iafrate"], ranked_card_ids["weber"]),
+            2: (ranked_card_ids["iafrate"], ranked_card_ids["weber"]),
+            3: (ranked_card_ids["weber"],),
+        }
+        for place, row in enumerate(top_rows[:3], start=1):
+            user_id = int(row["user_id"])
+            for card_id in fixed_by_place[place]:
+                cursor = connection.execute(
+                    """INSERT OR IGNORE INTO ranked_final_reward_grants(season_id,user_id,place,card_id)
+                       VALUES(?,?,?,?)""",
+                    (season_id, user_id, place, card_id),
+                )
+                if cursor.rowcount:
+                    connection.execute(
+                        "INSERT INTO user_cards(user_id,card_id,obtained_from,is_in_lineup,trade_locked) VALUES(?,?,?,0,0)",
+                        (user_id, card_id, f"ranked-final-s{int(season['season_number'])}-top{place}"),
+                    )
 
 
 def energy_discount(quantity: int) -> int:
@@ -562,7 +821,7 @@ def migrate_release_schema(connection: sqlite3.Connection) -> None:
             ("pirates_start_at",PIRATES_START_AT.isoformat()),
             ("pirates_end_at",PIRATES_END_AT.isoformat()),
             ("telegram_player_ui","miniapp_only"),
-            ("energy_purchase_mode","manual_contact"),
+            ("energy_purchase_mode","robokassa_pending_activation"),
             ("energy_purchase_contact","@teyld"),
             ("league_reward_ahl","3"),("league_reward_nhl","7"),("league_reward_olympics","15"),
         ):
@@ -926,7 +1185,7 @@ def create_energy_order(telegram_id:int,quantity:int)->tuple[bool,str,int|None]:
         discount=energy_discount(quantity); price=energy_price_rub(quantity)
     except ValueError as exc:
         return False,str(exc),None
-    return False,(f"{quantity:,} Energy · {price:,} ₽ (скидка {discount}%). Для покупки напишите @teyld.".replace(',', ' ')),None
+    return False,(f"{quantity:,} Energy · {price:,} ₽ (скидка {discount}%). Онлайн-оплата будет доступна после активации магазина в ROBOKASSA.".replace(',', ' ')),None
 
 
 def list_pending_energy_orders(limit:int=20)->list[sqlite3.Row]:
@@ -1045,13 +1304,39 @@ def process_heroes_normal_match(connection:sqlite3.Connection,*,user_id:int,matc
 
 
 def achievement_status(telegram_id:int)->list[dict]:
-    defs=(('unique100','Коллекционер','100 уникальных карт',250000,0),('ovr100','100 OVR','Получить карту 100+ OVR',1000000,5),('matches10000','Ветеран','10 000 матчей',5000000,25))
+    # R24: more milestones, but deliberately small payouts. Achievements are a
+    # progression signal, not a primary faucet for Coins/Rank Coins.
+    defs=(
+        ('cards10','Первые десять','Получить 10 уникальных карт',2500,0,'unique',10),
+        ('cards25','Коллекция растёт','Получить 25 уникальных карт',5000,0,'unique',25),
+        ('cards50','Полсотни','Получить 50 уникальных карт',10000,0,'unique',50),
+        ('unique100','Коллекционер','Получить 100 уникальных карт',20000,2,'unique',100),
+        ('ovr95','Сильное пополнение','Получить карту 95+ OVR',5000,0,'ovr95',1),
+        ('ovr100','100 OVR','Получить карту 100+ OVR',15000,2,'ovr100',1),
+        ('win1','Первая победа','Выиграть первый матч',1000,0,'wins',1),
+        ('wins25','На ходу','Выиграть 25 матчей',5000,0,'wins',25),
+        ('wins100','Победитель','Выиграть 100 матчей',15000,2,'wins',100),
+        ('matches100','Регуляр','Сыграть 100 матчей',7500,0,'matches',100),
+        ('matches500','Опытный','Сыграть 500 матчей',20000,2,'matches',500),
+        ('matches1000','Тысяча матчей','Сыграть 1 000 матчей',30000,3,'matches',1000),
+        ('goals500','Снайпер','Забить 500 голов',15000,1,'goals',500),
+        ('matches10000','Ветеран','Сыграть 10 000 матчей',75000,10,'matches',10000),
+    )
     with get_connection() as c:
         uid=get_user_id_by_telegram(c,telegram_id)
         if uid is None:return []
-        unique=int(c.execute("SELECT COUNT(*) FROM achievement_card_history WHERE user_id=?",(uid,)).fetchone()[0]);ovr=int(c.execute("""SELECT COUNT(*) FROM achievement_card_history h JOIN cards c ON c.id=h.card_id WHERE h.user_id=? AND c.overall>=100""",(uid,)).fetchone()[0]);matches=int(c.execute("SELECT matches_played FROM users WHERE id=?",(uid,)).fetchone()[0]);claimed={str(r[0]) for r in c.execute("SELECT achievement_code FROM achievement_claims WHERE user_id=?",(uid,))}
-        values={'unique100':(unique,100),'ovr100':(ovr,1),'matches10000':(matches,10000)}
-        return [{'code':code,'title':title,'description':desc,'coins':coins,'rank':rank,'progress':values[code][0],'target':values[code][1],'claimed':code in claimed} for code,title,desc,coins,rank in defs]
+        unique=int(c.execute("SELECT COUNT(*) FROM achievement_card_history WHERE user_id=?",(uid,)).fetchone()[0])
+        ovr95=int(c.execute("""SELECT COUNT(*) FROM achievement_card_history h JOIN cards c ON c.id=h.card_id WHERE h.user_id=? AND c.overall>=95""",(uid,)).fetchone()[0])
+        ovr100=int(c.execute("""SELECT COUNT(*) FROM achievement_card_history h JOIN cards c ON c.id=h.card_id WHERE h.user_id=? AND c.overall>=100""",(uid,)).fetchone()[0])
+        user=c.execute("SELECT matches_played,wins,goals_scored FROM users WHERE id=?",(uid,)).fetchone()
+        matches=int(user['matches_played'] or 0);wins=int(user['wins'] or 0);goals=int(user['goals_scored'] or 0)
+        claimed={str(r[0]) for r in c.execute("SELECT achievement_code FROM achievement_claims WHERE user_id=?",(uid,))}
+        metrics={'unique':unique,'ovr95':ovr95,'ovr100':ovr100,'matches':matches,'wins':wins,'goals':goals}
+        return [
+            {'code':code,'title':title,'description':desc,'coins':coins,'rank':rank,
+             'progress':metrics[metric],'target':target,'claimed':code in claimed}
+            for code,title,desc,coins,rank,metric,target in defs
+        ]
 
 
 def claim_achievement(telegram_id:int,code:str)->tuple[bool,str]:

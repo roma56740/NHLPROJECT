@@ -169,6 +169,10 @@ class TradeOfferListItem:
     wanted_currency_icon: str | None
     wanted_currency_name: str | None
     wanted_currency_amount: int
+    offered_currency_code: str | None
+    offered_currency_icon: str | None
+    offered_currency_name: str | None
+    offered_currency_amount: int
     offered_count: int
     offered_cosmetics_count: int
     wanted_cards_count: int
@@ -201,6 +205,10 @@ class TradeOfferProfile:
     wanted_currency_icon: str | None
     wanted_currency_name: str | None
     wanted_currency_amount: int
+    offered_currency_code: str | None
+    offered_currency_icon: str | None
+    offered_currency_name: str | None
+    offered_currency_amount: int
     status: str
     created_at: str
     accepted_at: str | None
@@ -928,6 +936,8 @@ async def create_trade_offer(
     wanted_card_ids: list[int] | None = None,
     wanted_currency_code: str | None = None,
     wanted_currency_amount: int = 0,
+    offered_currency_code: str | None = None,
+    offered_currency_amount: int = 0,
     target_user_id: int | None = None,
     offered_user_cosmetic_ids: list[int] | None = None,
     wanted_cosmetic_item_ids: list[int] | None = None,
@@ -939,8 +949,18 @@ async def create_trade_offer(
     wanted_cosmetic_item_ids = normalize_cosmetic_ids(wanted_cosmetic_item_ids)
     wanted_asset_type = "cosmetics" if wanted_asset_type == "cosmetics" else "cards"
 
-    if not offered_user_card_ids and not offered_user_cosmetic_ids:
-        return CommunityActionResult(False, "Обмен не создан", "Выбери хотя бы одну карточку или косметический предмет.")
+    offered_currency_code = (offered_currency_code or "").strip() or None
+    try:
+        offered_currency_amount = int(offered_currency_amount or 0)
+    except (TypeError, ValueError):
+        offered_currency_amount = 0
+    if offered_currency_amount < 0:
+        offered_currency_amount = 0
+
+    if not offered_user_card_ids and not offered_user_cosmetic_ids and offered_currency_amount <= 0:
+        return CommunityActionResult(False, "Обмен не создан", "Выбери карту, косметику или валюту, которую отдаёшь.")
+    if offered_currency_amount > 0 and not offered_currency_code:
+        return CommunityActionResult(False, "Обмен не создан", "Укажи валюту, которую отдаёшь.")
 
     if wanted_type == "cards":
         if wanted_asset_type == "cards" and not wanted_card_ids:
@@ -1026,6 +1046,22 @@ async def create_trade_offer(
                     connection.rollback()
                     return CommunityActionResult(False, "Обмен не создан", "Один из экземпляров косметики экипирован, установлен на карту или уже участвует в обмене.")
 
+            if offered_currency_amount > 0:
+                offered_currency_row = connection.execute(
+                    "SELECT code FROM currencies WHERE code = ? AND active = 1",
+                    (offered_currency_code,),
+                ).fetchone()
+                if offered_currency_row is None:
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен не создан", "Валюта, которую ты отдаёшь, сейчас недоступна.")
+                available = connection.execute(
+                    "SELECT amount FROM currency_balances WHERE user_id = ? AND currency_code = ?",
+                    (creator_user_id, offered_currency_code),
+                ).fetchone()
+                if available is None or int(available["amount"] or 0) < offered_currency_amount:
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен не создан", "Недостаточно выбранной валюты на балансе.")
+
             if wanted_type == "currency":
                 currency_row = connection.execute(
                     "SELECT code FROM currencies WHERE code = ? AND active = 1",
@@ -1048,8 +1084,8 @@ async def create_trade_offer(
                 """
                 INSERT INTO trade_offers (
                     creator_user_id, target_user_id, wanted_type, wanted_asset_type,
-                    wanted_currency_code, wanted_currency_amount, status
-                ) VALUES (?, ?, ?, ?, ?, ?, 'open')
+                    wanted_currency_code, wanted_currency_amount, offered_currency_code, offered_currency_amount, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')
                 """,
                 (
                     creator_user_id,
@@ -1058,6 +1094,8 @@ async def create_trade_offer(
                     wanted_asset_type if wanted_type == "cards" else "cards",
                     wanted_currency_code if wanted_type == "currency" else None,
                     wanted_currency_amount if wanted_type == "currency" else 0,
+                    offered_currency_code if offered_currency_amount > 0 else None,
+                    offered_currency_amount if offered_currency_amount > 0 else 0,
                 ),
             )
             offer_id = int(cursor.lastrowid)
@@ -1143,7 +1181,9 @@ async def get_trade_offers_page(mode: str = "market", user_id: int | None = None
                    trade_offers.target_user_id, target.nickname AS target_nickname,
                    trade_offers.wanted_type, COALESCE(trade_offers.wanted_asset_type, 'cards') AS wanted_asset_type,
                    trade_offers.wanted_currency_code, currencies.icon AS wanted_currency_icon,
-                   currencies.name AS wanted_currency_name, trade_offers.wanted_currency_amount, trade_offers.status,
+                   currencies.name AS wanted_currency_name, trade_offers.wanted_currency_amount,
+                   trade_offers.offered_currency_code, offered_currency.icon AS offered_currency_icon,
+                   offered_currency.name AS offered_currency_name, trade_offers.offered_currency_amount, trade_offers.status,
                    trade_offers.created_at,
                    (SELECT COUNT(*) FROM trade_offer_cards WHERE offer_id = trade_offers.id) AS offered_count,
                    (SELECT COUNT(*) FROM trade_offer_cosmetics WHERE offer_id = trade_offers.id) AS offered_cosmetics_count,
@@ -1153,6 +1193,7 @@ async def get_trade_offers_page(mode: str = "market", user_id: int | None = None
             JOIN users ON users.id = trade_offers.creator_user_id
             LEFT JOIN users target ON target.id = trade_offers.target_user_id
             LEFT JOIN currencies ON currencies.code = trade_offers.wanted_currency_code
+            LEFT JOIN currencies offered_currency ON offered_currency.code = trade_offers.offered_currency_code
             {where_sql}
             ORDER BY trade_offers.id DESC
             LIMIT ? OFFSET ?
@@ -1168,6 +1209,8 @@ async def get_trade_offers_page(mode: str = "market", user_id: int | None = None
                 wanted_type=row["wanted_type"], wanted_asset_type=row["wanted_asset_type"],
                 wanted_currency_code=row["wanted_currency_code"], wanted_currency_icon=row["wanted_currency_icon"],
                 wanted_currency_name=row["wanted_currency_name"], wanted_currency_amount=row["wanted_currency_amount"],
+                offered_currency_code=row["offered_currency_code"], offered_currency_icon=row["offered_currency_icon"],
+                offered_currency_name=row["offered_currency_name"], offered_currency_amount=row["offered_currency_amount"],
                 offered_count=row["offered_count"], offered_cosmetics_count=row["offered_cosmetics_count"],
                 wanted_cards_count=row["wanted_cards_count"], wanted_cosmetics_count=row["wanted_cosmetics_count"],
                 status=row["status"], created_at=row["created_at"],
@@ -1187,12 +1230,15 @@ async def get_trade_offer_profile(offer_id: int) -> TradeOfferProfile | None:
                    trade_offers.wanted_type, COALESCE(trade_offers.wanted_asset_type, 'cards') AS wanted_asset_type,
                    trade_offers.wanted_currency_code, currencies.icon AS wanted_currency_icon,
                    currencies.name AS wanted_currency_name, trade_offers.wanted_currency_amount,
+                   trade_offers.offered_currency_code, offered_currency.icon AS offered_currency_icon,
+                   offered_currency.name AS offered_currency_name, trade_offers.offered_currency_amount,
                    trade_offers.status, trade_offers.created_at, trade_offers.accepted_at
             FROM trade_offers
             JOIN users creator ON creator.id = trade_offers.creator_user_id
             LEFT JOIN users target ON target.id = trade_offers.target_user_id
             LEFT JOIN users accepter ON accepter.id = trade_offers.accepted_by_user_id
             LEFT JOIN currencies ON currencies.code = trade_offers.wanted_currency_code
+            LEFT JOIN currencies offered_currency ON offered_currency.code = trade_offers.offered_currency_code
             WHERE trade_offers.id = ?
             """, (offer_id,),
         ).fetchone()
@@ -1256,6 +1302,8 @@ async def get_trade_offer_profile(offer_id: int) -> TradeOfferProfile | None:
         wanted_type=row["wanted_type"], wanted_asset_type=row["wanted_asset_type"],
         wanted_currency_code=row["wanted_currency_code"], wanted_currency_icon=row["wanted_currency_icon"],
         wanted_currency_name=row["wanted_currency_name"], wanted_currency_amount=row["wanted_currency_amount"],
+        offered_currency_code=row["offered_currency_code"], offered_currency_icon=row["offered_currency_icon"],
+        offered_currency_name=row["offered_currency_name"], offered_currency_amount=row["offered_currency_amount"],
         status=row["status"], created_at=row["created_at"], accepted_at=row["accepted_at"],
         offered_cards=[trade_user_card_from_row(item) for item in offered_rows],
         offered_cosmetics=[trade_cosmetic_from_row(item) for item in offered_cosmetic_rows],
@@ -1290,7 +1338,8 @@ async def accept_trade_offer(offer_id: int, accepter_user_id: int) -> CommunityA
             offered_cosmetic_ids = [int(r["user_cosmetic_item_id"]) for r in connection.execute(
                 "SELECT user_cosmetic_item_id FROM trade_offer_cosmetics WHERE offer_id = ?", (offer_id,)
             ).fetchall()]
-            if not offered_ids and not offered_cosmetic_ids:
+            offered_currency_amount = int(offer["offered_currency_amount"] or 0) if "offered_currency_amount" in offer.keys() else 0
+            if not offered_ids and not offered_cosmetic_ids and offered_currency_amount <= 0:
                 connection.rollback()
                 return CommunityActionResult(False, "Обмен недоступен", "В предложении нет активов.")
 
@@ -1319,6 +1368,21 @@ async def accept_trade_offer(offer_id: int, accepter_user_id: int) -> CommunityA
                 if valid_count != len(offered_cosmetic_ids):
                     connection.rollback()
                     return CommunityActionResult(False, "Обмен недоступен", "Один из экземпляров косметики владельца уже используется или недоступен.")
+
+            if offered_currency_amount > 0:
+                offered_code = str(offer["offered_currency_code"] or "")
+                deduct_offered = connection.execute(
+                    "UPDATE currency_balances SET amount = amount - ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND currency_code = ? AND amount >= ?",
+                    (offered_currency_amount, offer["creator_user_id"], offered_code, offered_currency_amount),
+                )
+                if deduct_offered.rowcount != 1:
+                    connection.rollback()
+                    return CommunityActionResult(False, "Обмен недоступен", "У автора предложения больше нет указанной суммы валюты.")
+                connection.execute(
+                    """INSERT INTO currency_balances (user_id, currency_code, amount) VALUES (?, ?, ?)
+                       ON CONFLICT(user_id, currency_code) DO UPDATE SET amount = amount + excluded.amount, updated_at = CURRENT_TIMESTAMP""",
+                    (accepter_user_id, offered_code, offered_currency_amount),
+                )
 
             if offer["wanted_type"] == "currency":
                 amount = int(offer["wanted_currency_amount"])

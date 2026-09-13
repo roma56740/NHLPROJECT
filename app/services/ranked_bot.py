@@ -201,7 +201,7 @@ async def build_bot_lineup(league: str | None, *, target_ovr: int | None = None)
     average_overall = round(sum(card.overall for card in cards) / filled_count) if filled_count else None
 
     chemistry_result = await calculate_chemistry([
-        ChemistryCard(country=card.country, team=card.team, collection_name=card.collection_name, collection_code=card.collection_code)
+        ChemistryCard(country=card.country, team=card.team, collection_name=card.collection_name, collection_code=card.collection_code, card_id=card.card_id)
         for card in cards
     ])
     final_overall = average_overall + chemistry_result.total_bonus if average_overall is not None else None
